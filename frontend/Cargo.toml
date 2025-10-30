@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 yew = { version = "0.21", features = ["csr"] }
-web-sys = "0.3.80"
+web-sys = { version = "0.3.82", features = ["Window", "Document", "Element", "HtmlElement", "Node", "EventTarget", "KeyboardEvent", "MouseEvent", "HtmlInputElement", "HtmlTextAreaElement"] }
 gloo-net = "0.6.0"
+gloo-console = "0.3.0"
 wasm-bindgen-futures = "0.4.53"
 serde = "1.0.226"
 num-format = "0.4.4"

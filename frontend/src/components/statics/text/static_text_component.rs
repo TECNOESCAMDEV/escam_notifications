@@ -1,3 +1,4 @@
+use gloo_console::console_dbg;
 use pulldown_cmark::{html, Parser};
 use yew::prelude::*;
 
@@ -53,8 +54,9 @@ impl Component for StaticTextComponent {
             let parser = Parser::new(&self.text);
             let mut html_output = String::new();
             html::push_html(&mut html_output, parser);
-            html_output
+            AttrValue::from(html_output)
         };
+        console_dbg!("Preview HTML:", &preview_html);
 
         html! {
             <div>
@@ -82,11 +84,7 @@ impl Component for StaticTextComponent {
                             />
                         }
                     } else {
-                        html! {
-                            <div>
-                                <div dangerously_set_inner_html={preview_html} />
-                            </div>
-                        }
+                        html! { <>{ Html::from_html_unchecked(preview_html.clone()) }</> }
                     }
                 }
             </div>
