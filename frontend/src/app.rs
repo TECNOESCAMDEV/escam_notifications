@@ -1,4 +1,5 @@
-use yew::{Component, Context, Html};
+use crate::components::statics::text::static_text_component::StaticTextComponent;
+use yew::{html, Component, Context, Html};
 
 pub struct App;
 
@@ -7,10 +8,14 @@ impl Component for App {
     type Properties = ();
 
     fn create(_ctx: &Context<Self>) -> Self {
-        todo!()
+        Self
     }
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
-        todo!()
+        html! {
+            <div>
+                <StaticTextComponent />
+            </div>
+        }
     }
 }

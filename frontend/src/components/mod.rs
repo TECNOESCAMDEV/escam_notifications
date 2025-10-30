@@ -1,1 +1,1 @@
-mod statics;
+pub mod statics;

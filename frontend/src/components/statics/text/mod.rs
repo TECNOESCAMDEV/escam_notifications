@@ -1,1 +1,1 @@
-mod static_text_component;
+pub mod static_text_component;
