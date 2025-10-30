@@ -1,0 +1,1 @@
+mod static_text_component;
