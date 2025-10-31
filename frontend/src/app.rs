@@ -1,4 +1,5 @@
 use crate::components::statics::text::static_text_component::StaticTextComponent;
+use crate::workspace_grid::WorkspaceGrid;
 use yew::{html, Component, Context, Html};
 
 pub struct App;
@@ -13,9 +14,9 @@ impl Component for App {
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
         html! {
-            <div>
-                <StaticTextComponent />
-            </div>
-        }
+                <WorkspaceGrid columns={2} rows={3}>
+                    <StaticTextComponent />
+                </WorkspaceGrid>
+            }
     }
 }
