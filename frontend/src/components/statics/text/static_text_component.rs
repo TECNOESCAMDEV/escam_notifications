@@ -1,4 +1,3 @@
-use gloo_console::console_dbg;
 use pulldown_cmark::{html, Parser};
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, HtmlTextAreaElement, InputEvent};
@@ -22,20 +21,20 @@ fn style_tag() -> Html {
     html! { <style>{BUTTON_STYLE}</style> }
 }
 
-fn icon_button(icon_name: &str, label: &str, onclick: Callback<MouseEvent>, wide: bool) -> Html {
+fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wide: bool) -> Html {
     let class = if wide { "icon-btn wide" } else { "icon-btn" };
     html! {
-         <button class={class} onclick={onclick}>
-             <i class="material-icons">{icon_name}</i>
-             <span class="icon-label">{label}</span>
-         </button>
+        <button class={class} onclick={on_click.clone()}>
+            <i class="material-icons">{icon_name}</i>
+            <span class="icon-label">{label}</span>
+        </button>
     }
 }
 
 pub enum Msg {
     SetTab(String),
     UpdateText(String),
-    ApplyStyle(String),
+    ApplyStyle(String, ()),
     AutoResize(InputEvent),
 }
 
@@ -65,15 +64,31 @@ impl Component for StaticTextComponent {
                 self.text = new_text;
                 true
             }
-            Msg::ApplyStyle(style) => {
-                let styled = match style.as_str() {
-                    "bold" => "**texto**",
-                    "italic" => "*texto*",
-                    "bolditalic" => "***texto***",
-                    "normal" => "texto",
-                    _ => "",
-                };
-                self.text.push_str(styled);
+            Msg::ApplyStyle(style, _) => {
+                if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                    if let Some(textarea) = document.get_element_by_id("static-textarea")
+                        .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok()) {
+                        let start = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let end = textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let styled = match style.as_str() {
+                            "bold" => "**texto**",
+                            "italic" => "*texto*",
+                            "bolditalic" => "***texto***",
+                            "normal" => "texto",
+                            _ => "",
+                        };
+                        self.text = format!(
+                            "{}{}{}",
+                            &self.text[..start],
+                            styled,
+                            &self.text[end..]
+                        );
+                        let select_start = (start + styled.find("texto").unwrap_or(0)) as u32;
+                        let select_end = select_start + 5;
+                        textarea.set_selection_start(Some(select_start)).ok();
+                        textarea.set_selection_end(Some(select_end)).ok();
+                    }
+                }
                 true
             }
             Msg::AutoResize(e) => {
@@ -98,16 +113,19 @@ impl Component for StaticTextComponent {
             html::push_html(&mut html_output, parser);
             AttrValue::from(html_output)
         };
-        console_dbg!("Preview HTML:", &preview_html);
+
+        let make_style_callback = |style: &'static str| {
+            link.callback(move |_| Msg::ApplyStyle(style.to_string(), ()))
+        };
 
         html! {
              <div class="static-text-root">
                  { style_tag() }
                  <div class="icon-toolbar">
-                     {icon_button("text_fields", "Normal", link.callback(|_| Msg::ApplyStyle("normal".to_string())), false)}
-                     {icon_button("format_bold", "Negrita", link.callback(|_| Msg::ApplyStyle("bold".to_string())), false)}
-                     {icon_button("format_italic", "Cursiva", link.callback(|_| Msg::ApplyStyle("italic".to_string())), false)}
-                     {icon_button("format_bold", "Negrita+Cursiva", link.callback(|_| Msg::ApplyStyle("bolditalic".to_string())), true)}
+                    {icon_button("text_fields", "Normal", make_style_callback("normal"), false)}
+                    {icon_button("format_bold", "Negrita", make_style_callback("bold"), false)}
+                    {icon_button("format_italic", "Cursiva", make_style_callback("italic"), false)}
+                    {icon_button("format_bold", "Negrita+Cursiva", make_style_callback("bolditalic"), true)}
                  </div>
                  <div class="tab-bar">
                      <button
@@ -123,6 +141,7 @@ impl Component for StaticTextComponent {
                      if self.active_tab == "editor" {
                          html! {
                              <textarea
+                                 id="static-textarea"
                                  value={self.text.clone()}
                                  oninput={link.batch_callback(|e: InputEvent| {
                                      vec![
