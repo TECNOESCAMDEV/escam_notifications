@@ -13,7 +13,7 @@ const BUTTON_STYLE: &str = "
                     background: #f5f5f5;
                     border: none;
                     border-radius: 4px;
-                    padding: 4px 10px 0 10px; /* Más padding horizontal */
+                    padding: 4px 10px 0 10px;
                     cursor: pointer;
                     font-size: 20px;
                     transition: background 0.2s;
@@ -25,7 +25,7 @@ const BUTTON_STYLE: &str = "
                     box-sizing: border-box;
                 }
                 .icon-btn.wide {
-                    width: 90px; /* Más ancho para Negrita+Cursiva */
+                    width: 90px;
                 }
                 .icon-btn:hover {
                     background: #e0e0e0;
@@ -79,11 +79,11 @@ fn style_tag() -> Html {
 fn icon_button(icon_name: &str, label: &str, onclick: Callback<MouseEvent>, wide: bool) -> Html {
     let class = if wide { "icon-btn wide" } else { "icon-btn" };
     html! {
-                    <button class={class} {onclick}>
-                        <i class="material-icons">{icon_name}</i>
-                        <span class="icon-label">{label}</span>
-                    </button>
-                }
+        <button class={class} {onclick}>
+            <i class="material-icons">{icon_name}</i>
+            <span class="icon-label">{label}</span>
+        </button>
+    }
 }
 
 pub enum Msg {
@@ -143,42 +143,42 @@ impl Component for StaticTextComponent {
         console_dbg!("Preview HTML:", &preview_html);
 
         html! {
-                        <div>
-                            { style_tag() }
-                            <div class="icon-toolbar">
-                                {icon_button("text_fields", "Normal", link.callback(|_| Msg::ApplyStyle("normal".to_string())), false)}
-                                {icon_button("format_bold", "Negrita", link.callback(|_| Msg::ApplyStyle("bold".to_string())), false)}
-                                {icon_button("format_italic", "Cursiva", link.callback(|_| Msg::ApplyStyle("italic".to_string())), false)}
-                                {icon_button("format_bold", "Negrita+Cursiva", link.callback(|_| Msg::ApplyStyle("bolditalic".to_string())), true)}
-                            </div>
-                            <div class="tab-bar">
-                                <button
-                                    class={classes!("tab-btn", if self.active_tab == "editor" { "active" } else { "" })}
-                                    onclick={link.callback(|_| Msg::SetTab("editor".to_string()))}
-                                >{"Editor"}</button>
-                                <button
-                                    class={classes!("tab-btn", if self.active_tab == "preview" { "active" } else { "" })}
-                                    onclick={link.callback(|_| Msg::SetTab("preview".to_string()))}
-                                >{"Previsualización"}</button>
-                            </div>
-                            {
-                                if self.active_tab == "editor" {
-                                    html! {
-                                        <textarea
-                                            value={self.text.clone()}
-                                            oninput={link.callback(|e: InputEvent| {
-                                                let input: web_sys::HtmlTextAreaElement = e.target_unchecked_into();
-                                                Msg::UpdateText(input.value())
-                                            })}
-                                            rows={10}
-                                            cols={50}
-                                        />
-                                    }
-                                } else {
-                                    html! { <>{ Html::from_html_unchecked(preview_html.clone()) }</> }
-                                }
-                            }
-                        </div>
+            <div>
+                { style_tag() }
+                <div class="icon-toolbar">
+                    {icon_button("text_fields", "Normal", link.callback(|_| Msg::ApplyStyle("normal".to_string())), false)}
+                    {icon_button("format_bold", "Negrita", link.callback(|_| Msg::ApplyStyle("bold".to_string())), false)}
+                    {icon_button("format_italic", "Cursiva", link.callback(|_| Msg::ApplyStyle("italic".to_string())), false)}
+                    {icon_button("format_bold", "Negrita+Cursiva", link.callback(|_| Msg::ApplyStyle("bolditalic".to_string())), true)}
+                </div>
+                <div class="tab-bar">
+                    <button
+                        class={classes!("tab-btn", if self.active_tab == "editor" { "active" } else { "" })}
+                        onclick={link.callback(|_| Msg::SetTab("editor".to_string()))}
+                    >{"Editor"}</button>
+                    <button
+                        class={classes!("tab-btn", if self.active_tab == "preview" { "active" } else { "" })}
+                        onclick={link.callback(|_| Msg::SetTab("preview".to_string()))}
+                    >{"Previsualización"}</button>
+                </div>
+                {
+                    if self.active_tab == "editor" {
+                        html! {
+                            <textarea
+                                value={self.text.clone()}
+                                oninput={link.callback(|e: InputEvent| {
+                                    let input: web_sys::HtmlTextAreaElement = e.target_unchecked_into();
+                                    Msg::UpdateText(input.value())
+                                })}
+                                rows={10}
+                                cols={200}
+                            />
+                        }
+                    } else {
+                        html! { <>{ Html::from_html_unchecked(preview_html.clone()) }</> }
                     }
+                }
+            </div>
+        }
     }
 }
