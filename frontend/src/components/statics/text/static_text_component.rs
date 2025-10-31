@@ -34,12 +34,16 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
 pub enum Msg {
     SetTab(String),
     UpdateText(String),
+    Undo,
+    Redo,
     ApplyStyle(String, ()),
     AutoResize(InputEvent),
 }
 
 pub struct StaticTextComponent {
     text: String,
+    history: Vec<String>,
+    history_index: usize,
     active_tab: String,
     textarea_ref: NodeRef,
 }
@@ -51,6 +55,8 @@ impl Component for StaticTextComponent {
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
             text: String::new(),
+            history: vec![String::new()],
+            history_index: 0,
             active_tab: "editor".to_string(),
             textarea_ref: Default::default(),
         }
@@ -58,12 +64,31 @@ impl Component for StaticTextComponent {
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::SetTab(tab) => {
-                self.active_tab = tab;
+            Msg::UpdateText(new_text) => {
+                if self.text != new_text {
+                    self.text = new_text.clone();
+                    self.history.truncate(self.history_index + 1);
+                    self.history.push(new_text);
+                    self.history_index = self.history.len() - 1;
+                }
                 true
             }
-            Msg::UpdateText(new_text) => {
-                self.text = new_text;
+            Msg::Undo => {
+                if self.history_index > 0 {
+                    self.history_index -= 1;
+                    self.text = self.history[self.history_index].clone();
+                }
+                true
+            }
+            Msg::Redo => {
+                if self.history_index + 1 < self.history.len() {
+                    self.history_index += 1;
+                    self.text = self.history[self.history_index].clone();
+                }
+                true
+            }
+            Msg::SetTab(tab) => {
+                self.active_tab = tab;
                 true
             }
             Msg::ApplyStyle(style, _) => {
@@ -85,7 +110,7 @@ impl Component for StaticTextComponent {
                             styled,
                             &self.text[end..]
                         );
-                        textarea.set_value(&self.text); // <-- sincroniza el textarea
+                        textarea.set_value(&self.text);
                         let select_start = (start + styled.find("texto").unwrap_or(0)) as u32;
                         let select_end = select_start + 5;
                         textarea.set_selection_start(Some(select_start)).ok();
@@ -122,46 +147,56 @@ impl Component for StaticTextComponent {
         };
 
         html! {
-    <div class="static-text-root">
-        { style_tag() }
-        <div class="icon-toolbar">
-            {icon_button("text_fields", "Normal", make_style_callback("normal"), false)}
-            {icon_button("format_bold", "Negrita", make_style_callback("bold"), false)}
-            {icon_button("format_italic", "Cursiva", make_style_callback("italic"), false)}
-            {icon_button("format_bold", "Negrita+Cursiva", make_style_callback("bolditalic"), true)}
-        </div>
-        <div class="tab-bar">
-            <button
-                class={classes!("tab-btn", if self.active_tab == "editor" { "active" } else { "" })}
-                onclick={link.callback(|_| Msg::SetTab("editor".to_string()))}
-            >{"Editor"}</button>
-            <button
-                class={classes!("tab-btn", if self.active_tab == "preview" { "active" } else { "" })}
-                onclick={link.callback(|_| Msg::SetTab("preview".to_string()))}
-            >{"Previsualización"}</button>
-        </div>
-        {
-            if self.active_tab == "editor" {
-                html! {
-                    <textarea
-                        id="static-textarea"
-                        ref={self.textarea_ref.clone()}
-                        value={self.text.clone()}
-                        oninput={link.batch_callback(|e: InputEvent| {
-                            vec![
-                                Msg::UpdateText(e.target_unchecked_into::<HtmlTextAreaElement>().value()),
-                                Msg::AutoResize(e),
-                            ]
-                        })}
-                        rows={1}
-                        style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
-                    />
+            <div class="static-text-root">
+                { style_tag() }
+                <div class="icon-toolbar">
+                    {icon_button("text_fields", "Normal", make_style_callback("normal"), false)}
+                    {icon_button("format_bold", "Negrita", make_style_callback("bold"), false)}
+                    {icon_button("format_italic", "Cursiva", make_style_callback("italic"), false)}
+                    {icon_button("format_bold", "Negrita+Cursiva", make_style_callback("bolditalic"), true)}
+                </div>
+                <div class="tab-bar">
+                    <button
+                        class={classes!("tab-btn", if self.active_tab == "editor" { "active" } else { "" })}
+                        onclick={link.callback(|_| Msg::SetTab("editor".to_string()))}
+                    >{"Editor"}</button>
+                    <button
+                        class={classes!("tab-btn", if self.active_tab == "preview" { "active" } else { "" })}
+                        onclick={link.callback(|_| Msg::SetTab("preview".to_string()))}
+                    >{"Previsualización"}</button>
+                </div>
+                {
+                    if self.active_tab == "editor" {
+                        html! {
+                            <textarea
+                                id="static-textarea"
+                                ref={self.textarea_ref.clone()}
+                                value={self.text.clone()}
+                                oninput={link.batch_callback(|e: InputEvent| {
+                                    let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
+                                    vec![
+                                        Msg::UpdateText(value),
+                                        Msg::AutoResize(e),
+                                    ]
+                                })}
+                                onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                                    if e.ctrl_key() && e.key() == "z" {
+                                        vec![Msg::Undo]
+                                    } else if e.ctrl_key() && e.key() == "y" {
+                                        vec![Msg::Redo]
+                                    } else {
+                                        vec![]
+                                    }
+                                })}
+                                rows={1}
+                                style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
+                            />
+                        }
+                    } else {
+                        html! { <>{ Html::from_html_unchecked(preview_html.clone()) }</> }
+                    }
                 }
-            } else {
-                html! { <>{ Html::from_html_unchecked(preview_html.clone()) }</> }
-            }
+            </div>
         }
-    </div>
-}
     }
 }
