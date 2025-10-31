@@ -91,7 +91,6 @@ impl Component for StaticTextComponent {
                 self.active_tab = tab;
                 true
             }
-            // Rust
             Msg::ApplyStyle(style, _) => {
                 if let Some(document) = web_sys::window().and_then(|w| w.document()) {
                     if let Some(textarea) = document.get_element_by_id("static-textarea")
