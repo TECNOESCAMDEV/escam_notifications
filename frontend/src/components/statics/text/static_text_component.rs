@@ -2,6 +2,40 @@ use gloo_console::console_dbg;
 use pulldown_cmark::{html, Parser};
 use yew::prelude::*;
 
+const BUTTON_STYLE: &str = "
+    .icon-toolbar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+    .icon-btn {
+        background: #f5f5f5;
+        border: none;
+        border-radius: 4px;
+        padding: 4px;
+        cursor: pointer;
+        font-size: 20px;
+        transition: background 0.2s;
+    }
+    .icon-btn:hover {
+        background: #e0e0e0;
+    }
+    .material-icons {
+        vertical-align: middle;
+        font-size: 20px;
+        color: #333;
+    }
+";
+
+fn style_tag() -> Html {
+    html! { <style>{BUTTON_STYLE}</style> }
+}
+
+fn icon(name: &str) -> Html {
+    html! { <i class="material-icons">{name}</i> }
+}
+
+
 pub enum Msg {
     SetTab(String),
     UpdateText(String),
@@ -60,11 +94,12 @@ impl Component for StaticTextComponent {
 
         html! {
             <div>
-                <div>
-                    <button onclick={link.callback(|_| Msg::ApplyStyle("normal".to_string()))}>{"Normal"}</button>
-                    <button onclick={link.callback(|_| Msg::ApplyStyle("bold".to_string()))}>{"Negrilla"}</button>
-                    <button onclick={link.callback(|_| Msg::ApplyStyle("italic".to_string()))}>{"Itálica"}</button>
-                    <button onclick={link.callback(|_| Msg::ApplyStyle("bolditalic".to_string()))}>{"Negrilla Itálica"}</button>
+                { style_tag() }
+                <div class="icon-toolbar">
+                    <button class="icon-btn" onclick={link.callback(|_| Msg::ApplyStyle("normal".to_string()))}>{icon("text_fields")}</button>
+                    <button class="icon-btn" onclick={link.callback(|_| Msg::ApplyStyle("bold".to_string()))}>{icon("format_bold")}</button>
+                    <button class="icon-btn" onclick={link.callback(|_| Msg::ApplyStyle("italic".to_string()))}>{icon("format_italic")}</button>
+                    <button class="icon-btn" onclick={link.callback(|_| Msg::ApplyStyle("bolditalic".to_string()))}>{icon("format_bold")}{icon("format_italic")}</button>
                 </div>
                 <div>
                     <button onclick={link.callback(|_| Msg::SetTab("editor".to_string()))}>{"Editor"}</button>
