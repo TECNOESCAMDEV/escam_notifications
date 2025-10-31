@@ -14,7 +14,7 @@ impl Component for App {
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
         html! {
-                <WorkspaceGrid columns={2} rows={3}>
+                <WorkspaceGrid columns={1} rows={3}>
                     <StaticTextComponent />
                 </WorkspaceGrid>
             }
