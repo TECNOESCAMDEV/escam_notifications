@@ -91,6 +91,7 @@ impl Component for StaticTextComponent {
                 self.active_tab = tab;
                 true
             }
+            // Rust
             Msg::ApplyStyle(style, _) => {
                 if let Some(document) = web_sys::window().and_then(|w| w.document()) {
                     if let Some(textarea) = document.get_element_by_id("static-textarea")
@@ -115,6 +116,7 @@ impl Component for StaticTextComponent {
                         let select_end = select_start + 5;
                         textarea.set_selection_start(Some(select_start)).ok();
                         textarea.set_selection_end(Some(select_end)).ok();
+                        textarea.focus().ok();
                     }
                 }
                 true
