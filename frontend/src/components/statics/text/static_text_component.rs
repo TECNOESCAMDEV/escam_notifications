@@ -35,7 +35,6 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
 }
 
 // Message enum for component state changes
-// Message enum for component state changes
 pub enum Msg {
     SetTab(String),           // Switches between editor and preview tabs
     UpdateText(String),       // Updates the text in the editor
