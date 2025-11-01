@@ -41,7 +41,7 @@ pub enum Msg {
     Undo,
     Redo,
     ApplyStyle(String, ()),
-    AutoResize(InputEvent),
+    AutoResize,
 }
 
 // Component state struct
@@ -51,6 +51,19 @@ pub struct StaticTextComponent {
     history_index: usize,        // Current position in history
     active_tab: String,          // Selected tab ("editor" or "preview")
     textarea_ref: NodeRef,       // Reference to the textarea element
+}
+
+impl StaticTextComponent {
+    fn resize_textarea(&self) {
+        if let Some(textarea) = self.textarea_ref.cast::<HtmlTextAreaElement>() {
+            if let Ok(html_elem) = textarea.clone().dyn_into::<HtmlElement>() {
+                let style = html_elem.style();
+                let _ = style.set_property("height", "auto");
+                let scroll_height = textarea.scroll_height();
+                let _ = style.set_property("height", &format!("{}px", scroll_height));
+            }
+        }
+    }
 }
 
 impl Component for StaticTextComponent {
@@ -69,7 +82,7 @@ impl Component for StaticTextComponent {
     }
 
     // Handles state updates based on messages
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             // Updates text and history
             Msg::UpdateText(new_text) => {
@@ -100,6 +113,15 @@ impl Component for StaticTextComponent {
             // Switches between editor and preview tabs
             Msg::SetTab(tab) => {
                 self.active_tab = tab;
+                if self.active_tab == "editor" {
+                    ctx.link().send_message(Msg::AutoResize);
+                    let link = ctx.link().clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        gloo_timers::future::TimeoutFuture::new(200).await;
+                        link.send_message(Msg::AutoResize);
+                    });
+                    return true;
+                }
                 true
             }
             // Applies markdown style to selected text
@@ -133,15 +155,8 @@ impl Component for StaticTextComponent {
                 true
             }
             // Automatically resizes the textarea based on content
-            Msg::AutoResize(e) => {
-                if let Some(textarea) = e.target_dyn_into::<HtmlTextAreaElement>() {
-                    if let Ok(html_elem) = textarea.clone().dyn_into::<HtmlElement>() {
-                        let style = html_elem.style();
-                        let _ = style.set_property("height", "auto");
-                        let scroll_height = textarea.scroll_height();
-                        let _ = style.set_property("height", &format!("{}px", scroll_height));
-                    }
-                }
+            Msg::AutoResize => {
+                self.resize_textarea();
                 false
             }
         }
@@ -199,7 +214,7 @@ impl Component for StaticTextComponent {
                                     let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
                                     vec![
                                         Msg::UpdateText(value),
-                                        Msg::AutoResize(e),
+                                        Msg::AutoResize,
                                     ]
                                 })}
                                 // Handles undo/redo keyboard shortcuts
