@@ -16,6 +16,8 @@ const BUTTON_STYLE: &str = "
                              .tab-btn { background: #f5f5f5; border: none; border-radius: 4px 4px 0 0; padding: 6px 18px; cursor: pointer; font-size: 14px; color: #555; margin-bottom: -1px; border-bottom: 2px solid transparent; transition: background 0.2s, border-bottom 0.2s; }
                              .tab-btn.active { background: #fff; color: #222; border-bottom: 2px solid #1976d2; font-weight: bold; }
                              .tab-btn:hover { background: #e0e0e0; }
+                             #static-textarea { font-size: 11px; }
+                             .markdown-preview { font-size: 11px; }
                          ";
 
 // Renders a <style> tag with the component styles
@@ -216,7 +218,7 @@ impl Component for StaticTextComponent {
                                 id="static-textarea"
                                 ref={self.textarea_ref.clone()}
                                 value={self.text.clone()}
-                                // Handles text input and auto-resize
+                                spellcheck="false"
                                 oninput={link.batch_callback(|e: InputEvent| {
                                     let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
                                     vec![
@@ -224,7 +226,6 @@ impl Component for StaticTextComponent {
                                         Msg::AutoResize,
                                     ]
                                 })}
-                                // Handles undo/redo keyboard shortcuts
                                 onkeydown={link.batch_callback(|e: KeyboardEvent| {
                                     if e.ctrl_key() && e.key() == "z" {
                                         vec![Msg::Undo]
@@ -240,7 +241,7 @@ impl Component for StaticTextComponent {
                         }
                     } else {
                         // Shows the markdown preview if "preview" tab is active
-                        html! { <>{ Html::from_html_unchecked(preview_html.clone()) }</> }
+                        html! { <div class="markdown-preview">{ Html::from_html_unchecked(preview_html.clone()) }</div> }
                     }
                 }
             </div>
