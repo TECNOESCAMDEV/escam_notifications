@@ -16,8 +16,8 @@ const BUTTON_STYLE: &str = "
                              .tab-btn { background: #f5f5f5; border: none; border-radius: 4px 4px 0 0; padding: 6px 18px; cursor: pointer; font-size: 14px; color: #555; margin-bottom: -1px; border-bottom: 2px solid transparent; transition: background 0.2s, border-bottom 0.2s; }
                              .tab-btn.active { background: #fff; color: #222; border-bottom: 2px solid #1976d2; font-weight: bold; }
                              .tab-btn:hover { background: #e0e0e0; }
-                             #static-textarea { font-size: 11px; }
-                             .markdown-preview { font-size: 11px; }
+                             #static-textarea { font-size: 11px; font-family: Arial, sans-serif; }
+                             .markdown-preview { font-size: 11px; font-family: Arial, sans-serif; }
                          ";
 
 // Renders a <style> tag with the component styles
