@@ -35,13 +35,14 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
 }
 
 // Message enum for component state changes
+// Message enum for component state changes
 pub enum Msg {
-    SetTab(String),
-    UpdateText(String),
-    Undo,
-    Redo,
-    ApplyStyle(String, ()),
-    AutoResize,
+    SetTab(String),           // Switches between editor and preview tabs
+    UpdateText(String),       // Updates the text in the editor
+    Undo,                     // Undo last change
+    Redo,                     // Redo change
+    ApplyStyle(String, ()),   // Applies markdown style to selected text
+    AutoResize,               // Automatically resizes the textarea
 }
 
 // Component state struct
@@ -54,6 +55,7 @@ pub struct StaticTextComponent {
 }
 
 impl StaticTextComponent {
+    /// Resizes the textarea to fit its content automatically.
     fn resize_textarea(&self) {
         if let Some(textarea) = self.textarea_ref.cast::<HtmlTextAreaElement>() {
             if let Ok(html_elem) = textarea.clone().dyn_into::<HtmlElement>() {
@@ -166,7 +168,8 @@ impl Component for StaticTextComponent {
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
 
-        // Converts markdown text to HTML for preview
+        // Converts markdown text to HTML for preview.
+        // Replaces single newlines with double spaces and newline to force line breaks in markdown.
         let preview_html = {
             let text_with_double_newlines = self.text.replace("\n", "  \n");
             let parser = Parser::new(&text_with_double_newlines);
