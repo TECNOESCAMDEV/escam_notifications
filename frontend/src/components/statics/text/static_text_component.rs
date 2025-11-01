@@ -134,8 +134,12 @@ impl Component for StaticTextComponent {
                 if let Some(document) = web_sys::window().and_then(|w| w.document()) {
                     if let Some(textarea) = document.get_element_by_id("static-textarea")
                         .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok()) {
-                        let start = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                        let end = textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let start_utf16 = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let end_utf16 = textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
+
+                        let start = self.text.encode_utf16().take(start_utf16).map(|c| char::from_u32(c as u32).unwrap().len_utf8()).sum();
+                        let end = self.text.encode_utf16().take(end_utf16).map(|c| char::from_u32(c as u32).unwrap().len_utf8()).sum();
+
                         let styled = match style.as_str() {
                             "bold" => "**texto**",
                             "italic" => "*texto*",
@@ -144,6 +148,7 @@ impl Component for StaticTextComponent {
                             "bulleted_list" => "- texto",
                             _ => "",
                         };
+
                         self.text = format!(
                             "{}{}{}",
                             &self.text[..start],
