@@ -168,7 +168,8 @@ impl Component for StaticTextComponent {
 
         // Converts markdown text to HTML for preview
         let preview_html = {
-            let parser = Parser::new(&self.text);
+            let text_with_double_newlines = self.text.replace("\n", "  \n");
+            let parser = Parser::new(&text_with_double_newlines);
             let mut html_output = String::new();
             html::push_html(&mut html_output, parser);
             AttrValue::from(html_output)
