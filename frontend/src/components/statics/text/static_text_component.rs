@@ -171,12 +171,14 @@ impl Component for StaticTextComponent {
     // Renders the component UI
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
-
         // Converts Markdown text to HTML for preview.
         let preview_html = {
+            // Step 0: Replace every '\n' with ' \n' to ensure a space before each newline
+            let text_with_spaces = self.text.replace("\n", " \n");
+
             // Step 1: Mark multiple newlines with a special marker
             let re = Regex::new(r"(\n\s*){2,}").unwrap();
-            let marked_text = re.replace_all(&self.text, |caps: &regex::Captures| {
+            let marked_text = re.replace_all(&text_with_spaces, |caps: &regex::Captures| {
                 let count = caps[0].matches('\n').count();
                 format!("br{}", count)
             });
