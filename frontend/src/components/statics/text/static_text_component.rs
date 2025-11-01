@@ -134,6 +134,7 @@ impl Component for StaticTextComponent {
                 if let Some(document) = web_sys::window().and_then(|w| w.document()) {
                     if let Some(textarea) = document.get_element_by_id("static-textarea")
                         .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok()) {
+
                         let start_utf16 = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
                         let end_utf16 = textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
 
@@ -156,8 +157,12 @@ impl Component for StaticTextComponent {
                             &self.text[end..]
                         );
                         textarea.set_value(&self.text);
-                        let select_start = (start + styled.find("texto").unwrap_or(0)) as u32;
-                        let select_end = select_start + 5;
+
+                        // Find position of inserted "texto"
+                        let text_pos = self.text[start..].find("texto").unwrap_or(0) + start;
+                        let select_start = byte_to_utf16_idx(&self.text, text_pos);
+                        let select_end = byte_to_utf16_idx(&self.text, text_pos + 5);
+
                         textarea.set_selection_start(Some(select_start)).ok();
                         textarea.set_selection_end(Some(select_end)).ok();
                         textarea.focus().ok();
@@ -270,4 +275,8 @@ impl Component for StaticTextComponent {
             </div>
         }
     }
+}
+
+fn byte_to_utf16_idx(s: &str, byte_idx: usize) -> u32 {
+    s[..byte_idx].encode_utf16().count() as u32
 }
