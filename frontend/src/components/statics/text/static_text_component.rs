@@ -27,11 +27,11 @@ fn style_tag() -> Html {
 fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wide: bool) -> Html {
     let class = if wide { "icon-btn wide" } else { "icon-btn" };
     html! {
-                                <button class={class} onclick={on_click.clone()}>
-                                    <i class="material-icons">{icon_name}</i>
-                                    <span class="icon-label">{label}</span>
-                                </button>
-                            }
+        <button class={class} onclick={on_click.clone()}>
+            <i class="material-icons">{icon_name}</i>
+            <span class="icon-label">{label}</span>
+        </button>
+    }
 }
 
 // Message enum for component state changes
@@ -137,6 +137,7 @@ impl Component for StaticTextComponent {
                             "italic" => "*texto*",
                             "bolditalic" => "***texto***",
                             "normal" => "texto",
+                            "bulleted_list" => "- texto",
                             _ => "",
                         };
                         self.text = format!(
@@ -188,10 +189,13 @@ impl Component for StaticTextComponent {
                 { style_tag() }
                 // Toolbar with style buttons
                 <div class="icon-toolbar">
+                    {icon_button("undo", "Deshacer", link.callback(|_| Msg::Undo), false)}
+                    {icon_button("redo", "Rehacer", link.callback(|_| Msg::Redo), false)}
                     {icon_button("text_fields", "Normal", make_style_callback("normal"), false)}
                     {icon_button("format_bold", "Negrita", make_style_callback("bold"), false)}
                     {icon_button("format_italic", "Cursiva", make_style_callback("italic"), false)}
                     {icon_button("format_bold", "Negrita+Cursiva", make_style_callback("bolditalic"), true)}
+                    {icon_button("format_list_bulleted", "Items", make_style_callback("bulleted_list"), false)}
                 </div>
                 // Tab bar for switching between editor and preview
                 <div class="tab-bar">
