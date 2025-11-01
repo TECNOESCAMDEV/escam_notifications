@@ -1,4 +1,6 @@
+//use gloo_console::console_dbg;
 use pulldown_cmark::{html, Parser};
+use regex::Regex;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, HtmlTextAreaElement, InputEvent};
 use yew::prelude::*;
@@ -170,14 +172,28 @@ impl Component for StaticTextComponent {
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
 
-        // Converts markdown text to HTML for preview.
-        // Replaces single newlines with double spaces and newline to force line breaks in markdown.
+        // Converts Markdown text to HTML for preview.
         let preview_html = {
-            let text_with_double_newlines = self.text.replace("\n", "  \n");
-            let parser = Parser::new(&text_with_double_newlines);
+            // Step 1: Mark multiple newlines with a special marker
+            let re = Regex::new(r"(\n\s*){2,}").unwrap();
+            let marked_text = re.replace_all(&self.text, |caps: &regex::Captures| {
+                let count = caps[0].matches('\n').count();
+                format!("br{}", count)
+            });
+
+            // Step 2: Parse the marked text as Markdown
+            let parser = Parser::new(&marked_text);
             let mut html_output = String::new();
             html::push_html(&mut html_output, parser);
-            AttrValue::from(html_output)
+
+            // Step 3: Replace the special markers with actual <br> tags
+            let re_br = Regex::new(r"br(\d+)").unwrap();
+            let final_html = re_br.replace_all(&html_output, |caps: &regex::Captures| {
+                let n = caps[1].parse::<usize>().unwrap_or(1);
+                "<br>".repeat(n)
+            });
+
+            AttrValue::from(final_html.into_owned())
         };
 
         // Helper to create style button callbacks
