@@ -213,9 +213,12 @@ impl Component for StaticTextComponent {
             // Automatically resizes the textarea based on content and syncs text with template
             Msg::AutoResize => {
                 self.resize_textarea();
-                // Syncs text with template if it exists
                 if let Some(template) = &mut self.template {
                     template.text = self.text.clone();
+                    // Filter images to keep only those referenced in the text
+                    if let Some(images) = &mut template.images {
+                        images.retain(|img| self.text.contains(&format!("[img:{}]", img.id)));
+                    }
                 } else {
                     self.template = Some(Template {
                         id: String::new(),
