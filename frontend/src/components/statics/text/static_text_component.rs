@@ -66,6 +66,8 @@ pub enum Msg {
     ApplyStyle(String, ()), // Applies markdown style to selected text
     AutoResize,             // Automatically resizes the textarea
     CursorOnImgTag(bool),   // Checks if cursor is on an image tag
+    OpenFileDialog,      // Opens the file selection dialog
+    FileSelected(web_sys::File), // Handles selected file
 }
 
 // Component state struct
@@ -75,6 +77,7 @@ pub struct StaticTextComponent {
     history_index: usize,  // Current position in history
     active_tab: String,    // Selected tab ("editor" or "preview")
     textarea_ref: NodeRef, // Reference to the textarea element
+    file_input_ref: NodeRef, // Reference to the file input element
 }
 
 impl StaticTextComponent {
@@ -103,6 +106,7 @@ impl Component for StaticTextComponent {
             history_index: 0,
             active_tab: "editor".to_string(),
             textarea_ref: Default::default(),
+            file_input_ref: Default::default(),
         }
     }
 
@@ -209,6 +213,30 @@ impl Component for StaticTextComponent {
                 console_dbg!("Cursor on img tag:", value);
                 false
             }
+            Msg::OpenFileDialog => {
+                if let Some(input) = self.file_input_ref.cast::<web_sys::HtmlInputElement>() {
+                    input.click();
+                }
+                false
+            }
+            Msg::FileSelected(file) => {
+                let url = web_sys::Url::create_object_url_with_blob(&file).unwrap_or_default();
+                if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                    if let Some(textarea) = document
+                        .get_element_by_id("static-textarea")
+                        .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok())
+                    {
+                        let start_utf16 = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let end_utf16 = textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let start = self.text.encode_utf16().take(start_utf16).map(|c| char::from_u32(c as u32).unwrap().len_utf8()).sum();
+                        let end = self.text.encode_utf16().take(end_utf16).map(|c| char::from_u32(c as u32).unwrap().len_utf8()).sum();
+                        let styled = format!("[img:{}]", url);
+                        self.text = format!("{}{}{}", &self.text[..start], styled, &self.text[end..]);
+                        textarea.set_value(&self.text);
+                    }
+                }
+                true
+            }
         }
     }
 
@@ -259,7 +287,7 @@ impl Component for StaticTextComponent {
                     {icon_button("format_italic", "Cursiva", make_style_callback("italic"), false)}
                     {icon_button("format_bold", "Negrita+Cursiva", make_style_callback("bolditalic"), true)}
                     {icon_button("format_list_bulleted", "Items", make_style_callback("bulleted_list"), false)}
-                    {icon_button("image", "Imagen", make_style_callback("image"), false)}
+                    {icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false)}
                 </div>
                 // Tab bar for switching between editor and preview
                 <div class="tab-bar">
@@ -276,47 +304,65 @@ impl Component for StaticTextComponent {
                     // Shows the editor textarea if "editor" tab is active
                     if self.active_tab == "editor" {
                         html! {
-                            <textarea
-                                id="static-textarea"
-                                ref={self.textarea_ref.clone()}
-                                value={self.text.clone()}
-                                spellcheck="false"
-                                oninput={link.batch_callback(|e: InputEvent| {
-                                    let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
-                                    vec![
-                                        Msg::UpdateText(value),
-                                        Msg::AutoResize,
-                                    ]
-                                })}
-                                onkeydown={link.batch_callback(|e: KeyboardEvent| {
-                                    let textarea = e.target_unchecked_into::<HtmlTextAreaElement>();
-                                    let text = textarea.value();
-                                    let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                                    let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
-                                    if is_cursor_on_img_tag(&text, cursor_pos) && !arrow_keys.contains(&e.key().as_str()) {
-                                        e.prevent_default();
-                                        vec![]
-                                    } else if e.ctrl_key() && e.key() == "z" {
-                                        vec![Msg::Undo]
-                                    } else if e.ctrl_key() && e.key() == "y" {
-                                        vec![Msg::Redo]
-                                    } else {
-                                        vec![]
-                                    }
-                                })}
-                                onselect={link.callback(|e: Event| {
-                                          let is_on_img_tag = e.target()
-                                              .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
-                                              .map_or(false, |textarea| {
-                                                  let text = textarea.value();
-                                                  let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                                                  is_cursor_on_img_tag(&text, cursor_pos)
-                                              });
-                                          Msg::CursorOnImgTag(is_on_img_tag)
-                                      })}
-                                rows={1}
-                                style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
-                            />
+                            <>
+                                <textarea
+                                    id="static-textarea"
+                                    ref={self.textarea_ref.clone()}
+                                    value={self.text.clone()}
+                                    spellcheck="false"
+                                    oninput={link.batch_callback(|e: InputEvent| {
+                                        let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
+                                        vec![
+                                            Msg::UpdateText(value),
+                                            Msg::AutoResize,
+                                        ]
+                                    })}
+                                    onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                                        let textarea = e.target_unchecked_into::<HtmlTextAreaElement>();
+                                        let text = textarea.value();
+                                        let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                                        let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+                                        if is_cursor_on_img_tag(&text, cursor_pos) && !arrow_keys.contains(&e.key().as_str()) {
+                                            e.prevent_default();
+                                            vec![]
+                                        } else if e.ctrl_key() && e.key() == "z" {
+                                            vec![Msg::Undo]
+                                        } else if e.ctrl_key() && e.key() == "y" {
+                                            vec![Msg::Redo]
+                                        } else {
+                                            vec![]
+                                        }
+                                    })}
+                                    onselect={link.callback(|e: Event| {
+                                              let is_on_img_tag = e.target()
+                                                  .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
+                                                  .map_or(false, |textarea| {
+                                                      let text = textarea.value();
+                                                      let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                                                      is_cursor_on_img_tag(&text, cursor_pos)
+                                                  });
+                                              Msg::CursorOnImgTag(is_on_img_tag)
+                                          })}
+                                    rows={1}
+                                    style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
+                                />
+                                <input
+                                    type="file"
+                                    accept="image/*"
+                                    ref={self.file_input_ref.clone()}
+                                    style="display: none;"
+                                    onchange={link.callback(|e: Event| {
+                                        let input = e.target_unchecked_into::<web_sys::HtmlInputElement>();
+                                        if let Some(files) = input.files() {
+                                            if let Some(file) = files.get(0) {
+                                                return Msg::FileSelected(file);
+                                            }
+                                        }
+                                        Msg::AutoResize
+                                    })}
+                                />
+                            </>
+
                         }
                     } else {
                         // Shows the markdown preview if "preview" tab is active
