@@ -225,7 +225,7 @@ impl Component for StaticTextComponent {
                 }
                 false
             }
-            Msg::CursorOnImgTag(value) => false,
+            Msg::CursorOnImgTag(_value) => false,
             Msg::OpenFileDialog => {
                 if let Some(input) = self.file_input_ref.cast::<web_sys::HtmlInputElement>() {
                     input.click();
@@ -325,7 +325,21 @@ impl Component for StaticTextComponent {
                 "<br>".repeat(n)
             });
 
-            AttrValue::from(final_html.into_owned())
+            // Step 4: Replace image tags with actual <img> elements
+            let mut html_with_images = final_html.into_owned();
+            if let Some(template) = &self.template {
+                if let Some(images) = &template.images {
+                    for image in images {
+                        let img_tag = format!("[img:{}]", image.id);
+                        let img_html = format!(
+                            r#"<img src="data:image/*;base64,{}" style="max-width:200px;max-height:200px;vertical-align:middle;" />"#,
+                            image.base64
+                        );
+                        html_with_images = html_with_images.replace(&img_tag, &img_html);
+                    }
+                }
+            }
+            AttrValue::from(html_with_images)
         };
 
         // Helper to create style button callbacks
