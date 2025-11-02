@@ -287,7 +287,14 @@ impl Component for StaticTextComponent {
                                     ]
                                 })}
                                 onkeydown={link.batch_callback(|e: KeyboardEvent| {
-                                    if e.ctrl_key() && e.key() == "z" {
+                                    let textarea = e.target_unchecked_into::<HtmlTextAreaElement>();
+                                    let text = textarea.value();
+                                    let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                                    let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+                                    if is_cursor_on_img_tag(&text, cursor_pos) && !arrow_keys.contains(&e.key().as_str()) {
+                                        e.prevent_default();
+                                        vec![]
+                                    } else if e.ctrl_key() && e.key() == "z" {
                                         vec![Msg::Undo]
                                     } else if e.ctrl_key() && e.key() == "y" {
                                         vec![Msg::Redo]
