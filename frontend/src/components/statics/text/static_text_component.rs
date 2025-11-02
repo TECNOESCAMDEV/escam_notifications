@@ -1,7 +1,6 @@
 use base64::{engine::general_purpose, Engine as _};
 use common::model::image::Image;
 use common::model::template::Template;
-use gloo_console::console_dbg;
 use gloo_file::{futures::read_as_bytes, Blob};
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
@@ -224,13 +223,9 @@ impl Component for StaticTextComponent {
                         images: None,
                     });
                 }
-                console_dbg!("Template synced:", self.template.as_ref());
                 false
             }
-            Msg::CursorOnImgTag(value) => {
-                console_dbg!("Cursor on img tag:", value);
-                false
-            }
+            Msg::CursorOnImgTag(value) => false,
             Msg::OpenFileDialog => {
                 if let Some(input) = self.file_input_ref.cast::<web_sys::HtmlInputElement>() {
                     input.click();
@@ -298,7 +293,6 @@ impl Component for StaticTextComponent {
                         images: Some(vec![image]),
                     });
                 }
-                console_dbg!("Image added to template:", self.template.as_ref());
                 false
             }
         }
