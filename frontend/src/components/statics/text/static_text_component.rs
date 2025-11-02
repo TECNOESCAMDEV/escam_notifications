@@ -1,3 +1,4 @@
+use gloo_console::console_dbg;
 //use gloo_console::console_dbg;
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
@@ -38,23 +39,42 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
     }
 }
 
+fn is_cursor_on_img_tag(text: &str, cursor_pos_utf16: usize) -> bool {
+    // Convert UTF-16 cursor position to byte index
+    let cursor_pos_byte = text.encode_utf16()
+        .take(cursor_pos_utf16)
+        .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+        .sum::<usize>();
+
+    let re = Regex::new(r"\[img:[^]]+]").unwrap();
+    for mat in re.find_iter(text) {
+        let start = mat.start();
+        let end = mat.end();
+        if cursor_pos_byte >= start && cursor_pos_byte <= end {
+            return true;
+        }
+    }
+    false
+}
+
 // Message enum for component state changes
 pub enum Msg {
-    SetTab(String),           // Switches between editor and preview tabs
-    UpdateText(String),       // Updates the text in the editor
-    Undo,                     // Undo last change
-    Redo,                     // Redo change
-    ApplyStyle(String, ()),   // Applies markdown style to selected text
-    AutoResize,               // Automatically resizes the textarea
+    SetTab(String),         // Switches between editor and preview tabs
+    UpdateText(String),     // Updates the text in the editor
+    Undo,                   // Undo last change
+    Redo,                   // Redo change
+    ApplyStyle(String, ()), // Applies markdown style to selected text
+    AutoResize,             // Automatically resizes the textarea
+    CursorOnImgTag(bool),   // Checks if cursor is on an image tag
 }
 
 // Component state struct
 pub struct StaticTextComponent {
-    text: String,                // Current text in the editor
-    history: Vec<String>,        // Undo/redo history
-    history_index: usize,        // Current position in history
-    active_tab: String,          // Selected tab ("editor" or "preview")
-    textarea_ref: NodeRef,       // Reference to the textarea element
+    text: String,          // Current text in the editor
+    history: Vec<String>,  // Undo/redo history
+    history_index: usize,  // Current position in history
+    active_tab: String,    // Selected tab ("editor" or "preview")
+    textarea_ref: NodeRef, // Reference to the textarea element
 }
 
 impl StaticTextComponent {
@@ -132,14 +152,27 @@ impl Component for StaticTextComponent {
             // Applies markdown style to selected text
             Msg::ApplyStyle(style, _) => {
                 if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-                    if let Some(textarea) = document.get_element_by_id("static-textarea")
-                        .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok()) {
+                    if let Some(textarea) = document
+                        .get_element_by_id("static-textarea")
+                        .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok())
+                    {
+                        let start_utf16 =
+                            textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let end_utf16 =
+                            textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
 
-                        let start_utf16 = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                        let end_utf16 = textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
-
-                        let start = self.text.encode_utf16().take(start_utf16).map(|c| char::from_u32(c as u32).unwrap().len_utf8()).sum();
-                        let end = self.text.encode_utf16().take(end_utf16).map(|c| char::from_u32(c as u32).unwrap().len_utf8()).sum();
+                        let start = self
+                            .text
+                            .encode_utf16()
+                            .take(start_utf16)
+                            .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+                            .sum();
+                        let end = self
+                            .text
+                            .encode_utf16()
+                            .take(end_utf16)
+                            .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+                            .sum();
 
                         let styled = match style.as_str() {
                             "bold" => "**texto**",
@@ -150,12 +183,8 @@ impl Component for StaticTextComponent {
                             _ => "",
                         };
 
-                        self.text = format!(
-                            "{}{}{}",
-                            &self.text[..start],
-                            styled,
-                            &self.text[end..]
-                        );
+                        self.text =
+                            format!("{}{}{}", &self.text[..start], styled, &self.text[end..]);
                         textarea.set_value(&self.text);
 
                         // Find position of inserted "texto"
@@ -173,6 +202,10 @@ impl Component for StaticTextComponent {
             // Automatically resizes the textarea based on content
             Msg::AutoResize => {
                 self.resize_textarea();
+                false
+            }
+            Msg::CursorOnImgTag(value) => {
+                console_dbg!("Cursor on img tag:", value);
                 false
             }
         }
@@ -209,9 +242,8 @@ impl Component for StaticTextComponent {
         };
 
         // Helper to create style button callbacks
-        let make_style_callback = |style: &'static str| {
-            link.callback(move |_| Msg::ApplyStyle(style.to_string(), ()))
-        };
+        let make_style_callback =
+            |style: &'static str| link.callback(move |_| Msg::ApplyStyle(style.to_string(), ()));
 
         html! {
             <div class="static-text-root">
@@ -263,6 +295,16 @@ impl Component for StaticTextComponent {
                                         vec![]
                                     }
                                 })}
+                                onselect={link.callback(|e: Event| {
+                                          let is_on_img_tag = e.target()
+                                              .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
+                                              .map_or(false, |textarea| {
+                                                  let text = textarea.value();
+                                                  let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                                                  is_cursor_on_img_tag(&text, cursor_pos)
+                                              });
+                                          Msg::CursorOnImgTag(is_on_img_tag)
+                                      })}
                                 rows={1}
                                 style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
                             />
