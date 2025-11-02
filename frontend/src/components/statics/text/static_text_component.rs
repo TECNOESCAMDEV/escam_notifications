@@ -180,6 +180,7 @@ impl Component for StaticTextComponent {
                             "bolditalic" => "***texto***",
                             "normal" => "texto",
                             "bulleted_list" => "- texto",
+                            "image" => "[img:url]",
                             _ => "",
                         };
 
@@ -258,6 +259,7 @@ impl Component for StaticTextComponent {
                     {icon_button("format_italic", "Cursiva", make_style_callback("italic"), false)}
                     {icon_button("format_bold", "Negrita+Cursiva", make_style_callback("bolditalic"), true)}
                     {icon_button("format_list_bulleted", "Items", make_style_callback("bulleted_list"), false)}
+                    {icon_button("image", "Imagen", make_style_callback("image"), false)}
                 </div>
                 // Tab bar for switching between editor and preview
                 <div class="tab-bar">
