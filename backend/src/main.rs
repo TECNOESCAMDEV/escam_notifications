@@ -1,5 +1,4 @@
 mod services;
-mod model;
 mod config;
 
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};

@@ -1,5 +1,5 @@
+use common::model::template::Template;
 use gloo_console::console_dbg;
-//use gloo_console::console_dbg;
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
 use wasm_bindgen::JsCast;
@@ -78,6 +78,7 @@ pub struct StaticTextComponent {
     active_tab: String,    // Selected tab ("editor" or "preview")
     textarea_ref: NodeRef, // Reference to the textarea element
     file_input_ref: NodeRef, // Reference to the file input element
+    template: Option<Template>
 }
 
 impl StaticTextComponent {
@@ -107,6 +108,7 @@ impl Component for StaticTextComponent {
             active_tab: "editor".to_string(),
             textarea_ref: Default::default(),
             file_input_ref: Default::default(),
+            template: None,
         }
     }
 
