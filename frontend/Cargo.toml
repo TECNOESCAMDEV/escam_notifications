@@ -18,7 +18,9 @@ js-sys = "0.3.81"
 pulldown-cmark = "0.13.0"
 wasm-bindgen = "0.2.105"
 gloo-timers = { version = "0.3.0", features = ["futures"] }
+gloo-file = { version = "0.3.0", features = ["futures"] }
 regex = "1.12.2"
+base64 = "0.22.1"
 
 
 [build-dependencies]

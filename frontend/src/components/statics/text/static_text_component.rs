@@ -1,5 +1,8 @@
+use base64::{engine::general_purpose, Engine as _};
+use common::model::image::Image;
 use common::model::template::Template;
 use gloo_console::console_dbg;
+use gloo_file::{futures::read_as_bytes, Blob};
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
 use wasm_bindgen::JsCast;
@@ -69,16 +72,17 @@ pub enum Msg {
     CursorOnImgTag(bool),        // Checks if cursor is on an image tag
     OpenFileDialog,              // Opens the file selection dialog
     FileSelected(web_sys::File), // Handles selected file
+    AddImageToTemplate { id: String, base64: String }, // Adds image to template
 }
 
 // Component state struct
 pub struct StaticTextComponent {
-    text: String,            // Current text in the editor
-    history: Vec<String>,    // Undo/redo history
-    history_index: usize,    // Current position in history
-    active_tab: String,      // Selected tab ("editor" or "preview")
-    textarea_ref: NodeRef,   // Reference to the textarea element
-    file_input_ref: NodeRef, // Reference to the file input element
+    text: String,               // Current text in the editor
+    history: Vec<String>,       // Undo/redo history
+    history_index: usize,       // Current position in history
+    active_tab: String,         // Selected tab ("editor" or "preview")
+    textarea_ref: NodeRef,      // Reference to the textarea element
+    file_input_ref: NodeRef,    // Reference to the file input element
     template: Option<Template>, // Optional template to sync text with
 }
 
@@ -234,7 +238,9 @@ impl Component for StaticTextComponent {
                 false
             }
             Msg::FileSelected(file) => {
-                let url = web_sys::Url::create_object_url_with_blob(&file).unwrap_or_default();
+                use uuid::Uuid;
+                let uuid = Uuid::new_v4().to_string();
+
                 if let Some(document) = web_sys::window().and_then(|w| w.document()) {
                     if let Some(textarea) = document
                         .get_element_by_id("static-textarea")
@@ -256,13 +262,44 @@ impl Component for StaticTextComponent {
                             .take(end_utf16)
                             .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
                             .sum();
-                        let styled = format!("[img:{}]", url);
+                        let styled = format!("[img:{}]", uuid);
                         self.text =
                             format!("{}{}{}", &self.text[..start], styled, &self.text[end..]);
                         textarea.set_value(&self.text);
+
+                        // Read the file as bytes and convert to base64
+                        let file_clone = file.clone();
+                        let link = ctx.link().clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let blob = Blob::from(file_clone);
+                            if let Ok(bytes) = read_as_bytes(&blob).await {
+                                let base64 = general_purpose::STANDARD.encode(&bytes);
+                                link.send_message_batch(vec![
+                                    Msg::AutoResize,
+                                    Msg::AddImageToTemplate { id: uuid, base64 },
+                                ]);
+                            }
+                        });
                     }
                 }
                 true
+            }
+            Msg::AddImageToTemplate { id, base64 } => {
+                let image = Image { id, base64 };
+                if let Some(template) = &mut self.template {
+                    match &mut template.images {
+                        Some(images) => images.push(image),
+                        None => template.images = Some(vec![image]),
+                    }
+                } else {
+                    self.template = Some(Template {
+                        id: String::new(),
+                        text: self.text.clone(),
+                        images: Some(vec![image]),
+                    });
+                }
+                console_dbg!("Image added to template:", self.template.as_ref());
+                false
             }
         }
     }
