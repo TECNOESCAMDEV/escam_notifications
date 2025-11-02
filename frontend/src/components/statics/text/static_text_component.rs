@@ -41,7 +41,8 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
 
 fn is_cursor_on_img_tag(text: &str, cursor_pos_utf16: usize) -> bool {
     // Convert UTF-16 cursor position to byte index
-    let cursor_pos_byte = text.encode_utf16()
+    let cursor_pos_byte = text
+        .encode_utf16()
         .take(cursor_pos_utf16)
         .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
         .sum::<usize>();
@@ -59,26 +60,26 @@ fn is_cursor_on_img_tag(text: &str, cursor_pos_utf16: usize) -> bool {
 
 // Message enum for component state changes
 pub enum Msg {
-    SetTab(String),         // Switches between editor and preview tabs
-    UpdateText(String),     // Updates the text in the editor
-    Undo,                   // Undo last change
-    Redo,                   // Redo change
-    ApplyStyle(String, ()), // Applies markdown style to selected text
-    AutoResize,             // Automatically resizes the textarea
-    CursorOnImgTag(bool),   // Checks if cursor is on an image tag
-    OpenFileDialog,      // Opens the file selection dialog
+    SetTab(String),              // Switches between editor and preview tabs
+    UpdateText(String),          // Updates the text in the editor
+    Undo,                        // Undo last change
+    Redo,                        // Redo change
+    ApplyStyle(String, ()),      // Applies markdown style to selected text
+    AutoResize,                  // Automatically resizes the textarea
+    CursorOnImgTag(bool),        // Checks if cursor is on an image tag
+    OpenFileDialog,              // Opens the file selection dialog
     FileSelected(web_sys::File), // Handles selected file
 }
 
 // Component state struct
 pub struct StaticTextComponent {
-    text: String,          // Current text in the editor
-    history: Vec<String>,  // Undo/redo history
-    history_index: usize,  // Current position in history
-    active_tab: String,    // Selected tab ("editor" or "preview")
-    textarea_ref: NodeRef, // Reference to the textarea element
+    text: String,            // Current text in the editor
+    history: Vec<String>,    // Undo/redo history
+    history_index: usize,    // Current position in history
+    active_tab: String,      // Selected tab ("editor" or "preview")
+    textarea_ref: NodeRef,   // Reference to the textarea element
     file_input_ref: NodeRef, // Reference to the file input element
-    template: Option<Template>
+    template: Option<Template>, // Optional template to sync text with
 }
 
 impl StaticTextComponent {
@@ -206,9 +207,20 @@ impl Component for StaticTextComponent {
                 }
                 true
             }
-            // Automatically resizes the textarea based on content
+            // Automatically resizes the textarea based on content and syncs text with template
             Msg::AutoResize => {
                 self.resize_textarea();
+                // Syncs text with template if it exists
+                if let Some(template) = &mut self.template {
+                    template.text = self.text.clone();
+                } else {
+                    self.template = Some(Template {
+                        id: String::new(),
+                        text: self.text.clone(),
+                        images: None,
+                    });
+                }
+                console_dbg!("Template synced:", self.template.as_ref());
                 false
             }
             Msg::CursorOnImgTag(value) => {
@@ -228,12 +240,25 @@ impl Component for StaticTextComponent {
                         .get_element_by_id("static-textarea")
                         .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok())
                     {
-                        let start_utf16 = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                        let end_utf16 = textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                        let start = self.text.encode_utf16().take(start_utf16).map(|c| char::from_u32(c as u32).unwrap().len_utf8()).sum();
-                        let end = self.text.encode_utf16().take(end_utf16).map(|c| char::from_u32(c as u32).unwrap().len_utf8()).sum();
+                        let start_utf16 =
+                            textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let end_utf16 =
+                            textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let start = self
+                            .text
+                            .encode_utf16()
+                            .take(start_utf16)
+                            .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+                            .sum();
+                        let end = self
+                            .text
+                            .encode_utf16()
+                            .take(end_utf16)
+                            .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+                            .sum();
                         let styled = format!("[img:{}]", url);
-                        self.text = format!("{}{}{}", &self.text[..start], styled, &self.text[end..]);
+                        self.text =
+                            format!("{}{}{}", &self.text[..start], styled, &self.text[end..]);
                         textarea.set_value(&self.text);
                     }
                 }
