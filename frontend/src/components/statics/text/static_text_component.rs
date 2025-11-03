@@ -4,6 +4,7 @@ use crate::tops_sheet::yw_material_top_sheet::{
 use base64::{engine::general_purpose, Engine as _};
 use common::model::image::Image;
 use common::model::template::Template;
+use gloo_console::console_dbg;
 use gloo_file::{futures::read_as_bytes, Blob};
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
@@ -234,6 +235,7 @@ impl Component for StaticTextComponent {
                         images: None,
                     });
                 }
+                console_dbg!("Template json after AutoResize:", serde_json::to_string(&self.template).unwrap_or_default());
                 false
             }
             Msg::OpenFileDialog => {

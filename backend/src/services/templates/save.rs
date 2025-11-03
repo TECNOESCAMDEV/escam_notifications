@@ -26,8 +26,8 @@ pub async fn save_template(payload: &Template) -> Result<(), String> {
         return Err("Template id cannot be empty".to_string());
     }
 
-    // Open an in-memory SQLite connection
-    let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+    // Open a SQLite connection to the file templify.sqlite
+    let conn = Connection::open("templify.sqlite").map_err(|e| e.to_string())?;
 
     // Insert or update the template
     conn.execute(
