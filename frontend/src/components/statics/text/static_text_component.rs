@@ -9,7 +9,6 @@ use gloo_file::{futures::read_as_bytes, Blob};
 use gloo_net::http::Request;
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
-use std::borrow::BorrowMut;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, HtmlTextAreaElement, InputEvent};
 use yew::platform::spawn_local;
@@ -331,47 +330,41 @@ impl Component for StaticTextComponent {
                 true
             }
             Msg::Save => {
-                // Ensures the template exists and has an ID before saving
-                if self.template.is_none() {
-                    self.template = Some(Template {
-                        id: String::new(),
-                        text: self.text.clone(),
-                        images: None,
-                    });
+                // Ensure the template exists and has an ID
+                let template = self.template.get_or_insert_with(|| Template {
+                    id: String::new(),
+                    text: self.text.clone(),
+                    images: None,
+                });
+
+                if template.id.is_empty() {
+                    template.id = uuid::Uuid::new_v4().to_string();
                 }
 
-                // Sends a POST request to save the template
-                if let Some(template) = self.template.borrow_mut() {
-                    if template.id.is_empty() {
-                        template.id = uuid::Uuid::new_v4().to_string();
-                    }
-                    let template = template.clone();
-
-                    spawn_local(async move {
-                        let res = Request::post("/api/templates/save")
-                            .json(&template)
-                            .unwrap()
-                            .send()
-                            .await;
-                        match res {
-                            Ok(response) => {
-                                if response.status() == 200 {
-                                    show_toast("Plantilla guardada correctamente.");
-                                } else {
-                                    show_toast(&format!(
-                                        "Error al guardar la plantilla: {}",
-                                        response.text().await.unwrap_or_default()
-                                    ));
-                                }
-                            }
-                            Err(err) => {
-                                show_toast(&format!("Error al guardar la plantilla: {}", err));
-                            }
+                // Clone the template and send a POST request
+                let template_clone = template.clone();
+                spawn_local(async move {
+                    match Request::post("/api/templates/save")
+                        .json(&template_clone)
+                        .unwrap()
+                        .send()
+                        .await
+                    {
+                        Ok(response) if response.status() == 200 => {
+                            show_toast("Plantilla guardada correctamente.");
                         }
-                    });
-                } else {
-                    show_toast("No hay plantilla para guardar.");
-                }
+                        Ok(response) => {
+                            show_toast(&format!(
+                                "Error al guardar la plantilla: {}",
+                                response.text().await.unwrap_or_default()
+                            ));
+                        }
+                        Err(err) => {
+                            show_toast(&format!("Error al guardar la plantilla: {}", err));
+                        }
+                    }
+                });
+
                 false
             }
         }
