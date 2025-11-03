@@ -1,3 +1,6 @@
+use crate::tops_sheet::yw_material_top_sheet::{
+    close_top_sheet, open_top_sheet, YwMaterialTopSheet,
+};
 use base64::{engine::general_purpose, Engine as _};
 use common::model::image::Image;
 use common::model::template::Template;
@@ -82,6 +85,7 @@ pub struct StaticTextComponent {
     active_tab: String,         // Selected tab ("editor" or "preview")
     textarea_ref: NodeRef,      // Reference to the textarea element
     file_input_ref: NodeRef,    // Reference to the file input element
+    image_dialog_ref: NodeRef,  // Reference to the image viewer dialog
     template: Option<Template>, // Optional template to sync text with
 }
 
@@ -112,6 +116,7 @@ impl Component for StaticTextComponent {
             active_tab: "editor".to_string(),
             textarea_ref: Default::default(),
             file_input_ref: Default::default(),
+            image_dialog_ref: Default::default(),
             template: None,
         }
     }
@@ -228,7 +233,14 @@ impl Component for StaticTextComponent {
                 }
                 false
             }
-            Msg::CursorOnImgTag(_value) => false,
+            Msg::CursorOnImgTag(cursor_inside) => {
+                if cursor_inside {
+                    open_top_sheet(self.image_dialog_ref.clone());
+                    true
+                } else {
+                    false
+                }
+            }
             Msg::OpenFileDialog => {
                 if let Some(input) = self.file_input_ref.cast::<web_sys::HtmlInputElement>() {
                     input.click();
@@ -436,6 +448,20 @@ impl Component for StaticTextComponent {
                                         Msg::AutoResize
                                     })}
                                 />
+
+                                <YwMaterialTopSheet node_ref={self.image_dialog_ref.clone()}>
+                                    <div style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;display:flex;flex-direction:column;">
+                                        <button
+                                            onclick={{
+                                                let dialog_ref = self.image_dialog_ref.clone();
+                                                Callback::from(move |_| close_top_sheet(dialog_ref.clone()))
+                                            }}
+                                            style="position:absolute;top:24px;right:32px;z-index:10000;padding:0.5rem 1rem;font-size:1.5rem;background:#fff;border:none;border-radius:4px;cursor:pointer;"
+                                        >
+                                            { "✕" }
+                                        </button>
+                                    </div>
+                                </YwMaterialTopSheet>
                             </>
 
                         }
