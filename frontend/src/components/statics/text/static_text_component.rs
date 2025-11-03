@@ -6,10 +6,13 @@ use common::model::image::Image;
 use common::model::template::Template;
 use gloo_console::console_dbg;
 use gloo_file::{futures::read_as_bytes, Blob};
+use gloo_net::http::Request;
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
+use std::borrow::BorrowMut;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, HtmlTextAreaElement, InputEvent};
+use yew::platform::spawn_local;
 use yew::prelude::*;
 
 // CSS styles for the component UI elements
@@ -77,6 +80,7 @@ pub enum Msg {
     AddImageToTemplate { id: String, base64: String }, // Adds image to template
     OpenImageDialogWithId(String), // Opens image dialog for a specific image ID
     DeleteImage(String),         // Deletes an image from the template
+    Save,                        // Saves the current template
 }
 
 // Component state struct
@@ -235,7 +239,10 @@ impl Component for StaticTextComponent {
                         images: None,
                     });
                 }
-                console_dbg!("Template json after AutoResize:", serde_json::to_string(&self.template).unwrap_or_default());
+                console_dbg!(
+                    "Template json after AutoResize:",
+                    serde_json::to_string(&self.template).unwrap_or_default()
+                );
                 false
             }
             Msg::OpenFileDialog => {
@@ -323,6 +330,50 @@ impl Component for StaticTextComponent {
                 close_top_sheet(self.image_dialog_ref.clone());
                 true
             }
+            Msg::Save => {
+                // Ensures the template exists and has an ID before saving
+                if self.template.is_none() {
+                    self.template = Some(Template {
+                        id: String::new(),
+                        text: self.text.clone(),
+                        images: None,
+                    });
+                }
+
+                // Sends a POST request to save the template
+                if let Some(template) = self.template.borrow_mut() {
+                    if template.id.is_empty() {
+                        template.id = uuid::Uuid::new_v4().to_string();
+                    }
+                    let template = template.clone();
+
+                    spawn_local(async move {
+                        let res = Request::post("/api/templates/save")
+                            .json(&template)
+                            .unwrap()
+                            .send()
+                            .await;
+                        match res {
+                            Ok(response) => {
+                                if response.status() == 200 {
+                                    show_toast("Plantilla guardada correctamente.");
+                                } else {
+                                    show_toast(&format!(
+                                        "Error al guardar la plantilla: {}",
+                                        response.text().await.unwrap_or_default()
+                                    ));
+                                }
+                            }
+                            Err(err) => {
+                                show_toast(&format!("Error al guardar la plantilla: {}", err));
+                            }
+                        }
+                    });
+                } else {
+                    show_toast("No hay plantilla para guardar.");
+                }
+                false
+            }
         }
     }
 
@@ -388,6 +439,7 @@ impl Component for StaticTextComponent {
                     {icon_button("format_bold", "Negrita+Cursiva", make_style_callback("bolditalic"), true)}
                     {icon_button("format_list_bulleted", "Items", make_style_callback("bulleted_list"), false)}
                     {icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false)}
+                    {icon_button("save", "Guardar", link.callback(|_| Msg::Save), false)}
                 </div>
                 // Tab bar for switching between editor and preview
                 <div class="tab-bar">
@@ -513,6 +565,35 @@ impl Component for StaticTextComponent {
     }
 }
 
+fn show_toast(message: &str) {
+    if let Some(window) = web_sys::window() {
+        if let Some(document) = window.document() {
+            let toast = document.create_element("div").unwrap();
+            toast.set_inner_html(message);
+            let html_toast = toast.dyn_into::<web_sys::HtmlElement>().unwrap();
+            let style = html_toast.style();
+            let _ = style.set_property("position", "fixed");
+            let _ = style.set_property("bottom", "20px");
+            let _ = style.set_property("left", "50%");
+            let _ = style.set_property("transform", "translateX(-50%)");
+            let _ = style.set_property("background", "rgba(0, 0, 0, 0.8)");
+            let _ = style.set_property("color", "#fff");
+            let _ = style.set_property("padding", "10px 20px");
+            let _ = style.set_property("border-radius", "4px");
+            let _ = style.set_property("z-index", "10000");
+            let _ = style.set_property("font-family", "Arial, sans-serif");
+            document.body().unwrap().append_child(&html_toast).unwrap();
+
+            let toast_clone = html_toast.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                gloo_timers::future::TimeoutFuture::new(3000).await;
+                if let Some(parent) = toast_clone.parent_node() {
+                    parent.remove_child(&toast_clone).ok();
+                }
+            });
+        }
+    }
+}
 fn byte_to_utf16_idx(s: &str, byte_idx: usize) -> u32 {
     s[..byte_idx].encode_utf16().count() as u32
 }

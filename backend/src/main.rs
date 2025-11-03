@@ -50,6 +50,7 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .app_data(web::JsonConfig::default().limit(10 * 1024 * 1024)) // 10 MB
             .service(services::templates::configure_routes())
             .default_service(web::route().to(serve_embedded))
     })
