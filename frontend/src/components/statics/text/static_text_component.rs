@@ -83,6 +83,14 @@ pub enum Msg {
     OpenImageDialogWithId(String), // Opens image dialog for a specific image ID
     DeleteImage(String),         // Deletes an image from the template
     Save,                        // Saves the current template
+    SetTemplate(Option<Template>),
+}
+
+// Properties struct
+#[derive(Properties, PartialEq, Clone)]
+pub struct StaticTextProps {
+    #[prop_or_default]
+    pub template_id: Option<String>, // Optional template ID to load
 }
 
 // Component state struct
@@ -96,6 +104,7 @@ pub struct StaticTextComponent {
     image_dialog_ref: NodeRef,         // Reference to the image viewer dialog
     template: Option<Template>,        // Optional template to sync text with
     selected_image_id: Option<String>, // Currently selected image ID
+    loaded: bool,                      // Flag to indicate if the template has been loaded
 }
 
 impl StaticTextComponent {
@@ -114,7 +123,7 @@ impl StaticTextComponent {
 
 impl Component for StaticTextComponent {
     type Message = Msg;
-    type Properties = ();
+    type Properties = StaticTextProps;
 
     // Initializes the component state
     fn create(_ctx: &Context<Self>) -> Self {
@@ -128,6 +137,7 @@ impl Component for StaticTextComponent {
             image_dialog_ref: Default::default(),
             template: None,
             selected_image_id: None,
+            loaded: false,
         }
     }
 
@@ -370,6 +380,10 @@ impl Component for StaticTextComponent {
 
                 false
             }
+            Msg::SetTemplate(template_opt) => {
+                self.template = template_opt;
+                true
+            }
         }
     }
 
@@ -563,6 +577,60 @@ impl Component for StaticTextComponent {
             </div>
         }
     }
+
+    fn rendered(&mut self, ctx: &Context<Self>, first_render: bool) {
+        if first_render && !self.loaded {
+            self.loaded = true;
+            if let Some(template_id) = ctx.props().template_id.clone() {
+                let link = ctx.link().clone();
+                spawn_local(async move {
+                    match Request::get(&format!("/api/templates/{}", template_id))
+                        .send()
+                        .await
+                    {
+                        Ok(response) if response.status() == 200 => {
+                            if let Ok(template) = response.json::<Template>().await {
+                                link.send_message(Msg::UpdateText(template.text.clone()));
+                                link.send_message(Msg::AutoResize);
+                                link.send_message_batch(vec![Msg::SetTemplate(Some(template))]);
+                                show_toast("Plantilla cargada correctamente.");
+                            } else {
+                                show_toast("Error cargando plantilla. Se creó una nueva.");
+                                link.send_message_batch(vec![
+                                    Msg::SetTemplate(Some(Template {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        text: String::new(),
+                                        images: None,
+                                    })),
+                                    Msg::UpdateText(String::new()),
+                                    Msg::SetTab("editor".to_string()),
+                                ]);
+                            }
+                        }
+                        _ => {
+                            show_toast("Error cargando plantilla. Se creó una nueva.");
+                            link.send_message_batch(vec![
+                                Msg::SetTemplate(Some(Template {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    text: String::new(),
+                                    images: None,
+                                })),
+                                Msg::UpdateText(String::new()),
+                                Msg::SetTab("editor".to_string()),
+                            ]);
+                        }
+                    }
+                });
+            } else {
+                show_toast("No se proporcionó ID de plantilla. Se creó una nueva.");
+                self.template = Some(Template {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: String::new(),
+                    images: None,
+                });
+            }
+        }
+    }
 }
 
 fn show_toast(message: &str) {
@@ -570,7 +638,7 @@ fn show_toast(message: &str) {
         if let Some(document) = window.document() {
             let toast = document.create_element("div").unwrap();
             toast.set_inner_html(message);
-            let html_toast = toast.dyn_into::<web_sys::HtmlElement>().unwrap();
+            let html_toast = toast.dyn_into::<HtmlElement>().unwrap();
             let style = html_toast.style();
             let _ = style.set_property("position", "fixed");
             let _ = style.set_property("bottom", "20px");
