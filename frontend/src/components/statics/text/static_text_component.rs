@@ -44,23 +44,23 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
     }
 }
 
-fn is_cursor_on_img_tag(text: &str, cursor_pos_utf16: usize) -> bool {
-    // Convert UTF-16 cursor position to byte index
+fn get_img_tag_id_at_cursor(text: &str, cursor_pos_utf16: usize) -> Option<String> {
     let cursor_pos_byte = text
         .encode_utf16()
         .take(cursor_pos_utf16)
         .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
         .sum::<usize>();
 
-    let re = Regex::new(r"\[img:[^]]+]").unwrap();
-    for mat in re.find_iter(text) {
-        let start = mat.start();
-        let end = mat.end();
+    let re = Regex::new(r"\[img:([^]]+)]").unwrap();
+    for mat in re.captures_iter(text) {
+        let m = mat.get(0).unwrap();
+        let start = m.start();
+        let end = m.end();
         if cursor_pos_byte >= start && cursor_pos_byte <= end {
-            return true;
+            return mat.get(1).map(|id| id.as_str().to_string());
         }
     }
-    false
+    None
 }
 
 // Message enum for component state changes
@@ -71,22 +71,24 @@ pub enum Msg {
     Redo,                        // Redo change
     ApplyStyle(String, ()),      // Applies markdown style to selected text
     AutoResize,                  // Automatically resizes the textarea
-    CursorOnImgTag(bool),        // Checks if cursor is on an image tag
     OpenFileDialog,              // Opens the file selection dialog
     FileSelected(web_sys::File), // Handles selected file
     AddImageToTemplate { id: String, base64: String }, // Adds image to template
+    OpenImageDialogWithId(String), // Opens image dialog for a specific image ID
+    DeleteImage(String),         // Deletes an image from the template
 }
 
 // Component state struct
 pub struct StaticTextComponent {
-    text: String,               // Current text in the editor
-    history: Vec<String>,       // Undo/redo history
-    history_index: usize,       // Current position in history
-    active_tab: String,         // Selected tab ("editor" or "preview")
-    textarea_ref: NodeRef,      // Reference to the textarea element
-    file_input_ref: NodeRef,    // Reference to the file input element
-    image_dialog_ref: NodeRef,  // Reference to the image viewer dialog
-    template: Option<Template>, // Optional template to sync text with
+    text: String,                      // Current text in the editor
+    history: Vec<String>,              // Undo/redo history
+    history_index: usize,              // Current position in history
+    active_tab: String,                // Selected tab ("editor" or "preview")
+    textarea_ref: NodeRef,             // Reference to the textarea element
+    file_input_ref: NodeRef,           // Reference to the file input element
+    image_dialog_ref: NodeRef,         // Reference to the image viewer dialog
+    template: Option<Template>,        // Optional template to sync text with
+    selected_image_id: Option<String>, // Currently selected image ID
 }
 
 impl StaticTextComponent {
@@ -118,6 +120,7 @@ impl Component for StaticTextComponent {
             file_input_ref: Default::default(),
             image_dialog_ref: Default::default(),
             template: None,
+            selected_image_id: None,
         }
     }
 
@@ -233,14 +236,6 @@ impl Component for StaticTextComponent {
                 }
                 false
             }
-            Msg::CursorOnImgTag(cursor_inside) => {
-                if cursor_inside {
-                    open_top_sheet(self.image_dialog_ref.clone());
-                    true
-                } else {
-                    false
-                }
-            }
             Msg::OpenFileDialog => {
                 if let Some(input) = self.file_input_ref.cast::<web_sys::HtmlInputElement>() {
                     input.click();
@@ -309,6 +304,22 @@ impl Component for StaticTextComponent {
                     });
                 }
                 false
+            }
+            Msg::OpenImageDialogWithId(id) => {
+                self.selected_image_id = Some(id);
+                open_top_sheet(self.image_dialog_ref.clone());
+                true
+            }
+            Msg::DeleteImage(id) => {
+                if let Some(template) = &mut self.template {
+                    if let Some(images) = &mut template.images {
+                        images.retain(|img| img.id != id);
+                    }
+                    self.text = self.text.replace(&format!("[img:{}]", id), "");
+                }
+                self.selected_image_id = None;
+                close_top_sheet(self.image_dialog_ref.clone());
+                true
             }
         }
     }
@@ -409,7 +420,7 @@ impl Component for StaticTextComponent {
                                         let text = textarea.value();
                                         let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
                                         let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
-                                        if is_cursor_on_img_tag(&text, cursor_pos) && !arrow_keys.contains(&e.key().as_str()) {
+                                        if get_img_tag_id_at_cursor(&text, cursor_pos).is_some() && !arrow_keys.contains(&e.key().as_str()) {
                                             e.prevent_default();
                                             vec![]
                                         } else if e.ctrl_key() && e.key() == "z" {
@@ -421,15 +432,18 @@ impl Component for StaticTextComponent {
                                         }
                                     })}
                                     onselect={link.callback(|e: Event| {
-                                              let is_on_img_tag = e.target()
-                                                  .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
-                                                  .map_or(false, |textarea| {
-                                                      let text = textarea.value();
-                                                      let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                                                      is_cursor_on_img_tag(&text, cursor_pos)
-                                                  });
-                                              Msg::CursorOnImgTag(is_on_img_tag)
-                                          })}
+                                        let id_opt = e.target()
+                                            .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
+                                            .and_then(|textarea| {
+                                                let text = textarea.value();
+                                                let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                                                get_img_tag_id_at_cursor(&text, cursor_pos)
+                                            });
+                                        match id_opt {
+                                            Some(id) => Msg::OpenImageDialogWithId(id),
+                                            None => Msg::AutoResize,
+                                        }
+                                    })}
                                     rows={1}
                                     style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
                                 />
@@ -450,7 +464,7 @@ impl Component for StaticTextComponent {
                                 />
 
                                 <YwMaterialTopSheet node_ref={self.image_dialog_ref.clone()}>
-                                    <div style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;display:flex;flex-direction:column;">
+                                    <div style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;">
                                         <button
                                             onclick={{
                                                 let dialog_ref = self.image_dialog_ref.clone();
@@ -460,6 +474,28 @@ impl Component for StaticTextComponent {
                                         >
                                             { "✕" }
                                         </button>
+                                        {
+                                            if let Some(id) = &self.selected_image_id {
+                                                let id_cloned = id.clone();
+                                                if let Some(template) = &self.template {
+                                                    if let Some(images) = &template.images {
+                                                        if let Some(image) = images.iter().find(|img| &img.id == id) {
+                                                            html! {
+                                                                <>
+                                                                    <img src={format!("data:image/*;base64,{}", image.base64)} style="max-width:400px;max-height:400px;margin-bottom:24px;" />
+                                                                    <button
+                                                                        style="padding:0.5rem 1rem;font-size:1rem;background:#d32f2f;color:#fff;border:none;border-radius:4px;cursor:pointer;"
+                                                                        onclick={link.callback(move |_| Msg::DeleteImage(id_cloned.clone()))}
+                                                                    >
+                                                                        { "Borrar" }
+                                                                    </button>
+                                                                </>
+                                                            }
+                                                        } else { html! { <span style="color:#fff;">{"Imagen no encontrada"}</span> } }
+                                                    } else { html! { <span style="color:#fff;">{"Sin imágenes"}</span> } }
+                                                } else { html! { <span style="color:#fff;">{"Sin template"}</span> } }
+                                            } else { html! { <span style="color:#fff;">{"No hay imagen seleccionada"}</span> } }
+                                        }
                                     </div>
                                 </YwMaterialTopSheet>
                             </>
