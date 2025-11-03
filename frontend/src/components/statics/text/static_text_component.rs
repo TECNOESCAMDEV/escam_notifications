@@ -31,6 +31,9 @@ const BUTTON_STYLE: &str = "
                              .markdown-preview { font-size: 11px; font-family: Arial, sans-serif; }
                          ";
 
+/// Maximum allowed file size in bytes for image uploads
+const MAX_FILE_SIZE: u32 = 2_000_000;
+
 // Renders a <style> tag with the component styles
 fn style_tag() -> Html {
     html! { <style>{BUTTON_STYLE}</style> }
@@ -503,6 +506,10 @@ impl Component for StaticTextComponent {
                                         let input = e.target_unchecked_into::<web_sys::HtmlInputElement>();
                                         if let Some(files) = input.files() {
                                             if let Some(file) = files.get(0) {
+                                                if file.size() > MAX_FILE_SIZE.into() {
+                                                    show_toast("El archivo es demasiado grande (máx. {} MB).".replace("{}", &(MAX_FILE_SIZE / 1_000_000).to_string()).as_str());
+                                                    return Msg::AutoResize;
+                                                }
                                                 return Msg::FileSelected(file);
                                             }
                                         }
