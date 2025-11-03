@@ -1,5 +1,5 @@
-mod services;
 mod config;
+mod services;
 
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use env_logger::Env;
@@ -22,14 +22,12 @@ async fn serve_embedded(req: HttpRequest) -> HttpResponse {
                 .content_type(mime.as_ref())
                 .body(file.contents().to_vec())
         }
-        None => {
-            match STATIC_DIR.get_file("index.html") {
-                Some(index) => HttpResponse::Ok()
-                    .content_type("text/html; charset=utf-8")
-                    .body(index.contents().to_vec()),
-                None => HttpResponse::NotFound().body("Not Found"),
-            }
-        }
+        None => match STATIC_DIR.get_file("index.html") {
+            Some(index) => HttpResponse::Ok()
+                .content_type("text/html; charset=utf-8")
+                .body(index.contents().to_vec()),
+            None => HttpResponse::NotFound().body("Not Found"),
+        },
     }
 }
 
@@ -52,6 +50,7 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .service(services::templates::configure_routes())
             .default_service(web::route().to(serve_embedded))
     })
         .bind((host, port))?
