@@ -17,30 +17,26 @@ pub async fn save_template(payload: &Template) -> Result<(), String> {
 
     let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
 
-    // Insert or update del template
+    // Insert or update template
     conn.execute(
         "INSERT OR REPLACE INTO templates (id, text) VALUES (?1, ?2)",
         params![&payload.id, &payload.text],
     )
         .map_err(|e| e.to_string())?;
 
-    // Images handling
     if let Some(images) = &payload.images {
         // Get existing image IDs for the template
-        let mut stmt = conn
+        let existing_ids: Vec<String> = conn
             .prepare("SELECT id FROM images WHERE template_id = ?1")
-            .map_err(|e| e.to_string())?;
-        let existing_ids: Vec<String> = stmt
+            .map_err(|e| e.to_string())?
             .query_map(params![&payload.id], |row| row.get(0))
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
             .collect();
 
-        let new_ids: Vec<&String> = images.iter().map(|img| &img.id).collect();
-
-        // Delete removed images
-        for old_id in existing_ids.iter() {
-            if !new_ids.contains(&old_id) {
+        // Delete images that are no longer present
+        for old_id in &existing_ids {
+            if !images.iter().any(|img| &img.id == old_id) {
                 conn.execute(
                     "DELETE FROM images WHERE id = ?1 AND template_id = ?2",
                     params![old_id, &payload.id],
