@@ -1,0 +1,265 @@
+use base64::{engine::general_purpose, Engine as _};
+use gloo_console::console_dbg;
+use gloo_file::{futures::read_as_bytes, Blob};
+use gloo_net::http::Request;
+use wasm_bindgen::JsCast;
+use web_sys::HtmlTextAreaElement;
+
+use yew::platform::spawn_local;
+use yew::prelude::*;
+
+use common::model::image::Image;
+use common::model::template::Template;
+
+use crate::tops_sheet::yw_material_top_sheet::{close_top_sheet, open_top_sheet};
+
+use super::helpers::{byte_to_utf16_idx, show_toast};
+use super::messages::Msg;
+use super::state::StaticTextComponent;
+
+pub fn update(
+    component: &mut StaticTextComponent,
+    ctx: &Context<StaticTextComponent>,
+    msg: Msg,
+) -> bool {
+    match msg {
+        Msg::UpdateText(new_text) => {
+            if component.text != new_text {
+                component.text = new_text.clone();
+                component.history.truncate(component.history_index + 1);
+                component.history.push(new_text);
+                component.history_index = component.history.len() - 1;
+            }
+            true
+        }
+        Msg::Undo => {
+            if component.history_index > 0 {
+                component.history_index -= 1;
+                component.text = component.history[component.history_index].clone();
+            }
+            true
+        }
+        Msg::Redo => {
+            if component.history_index + 1 < component.history.len() {
+                component.history_index += 1;
+                component.text = component.history[component.history_index].clone();
+            }
+            true
+        }
+        Msg::SetTab(tab) => {
+            component.active_tab = tab;
+            if component.active_tab == "editor" {
+                ctx.link().send_message(Msg::AutoResize);
+                let link = ctx.link().clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    gloo_timers::future::TimeoutFuture::new(200).await;
+                    link.send_message(Msg::AutoResize);
+                });
+                return true;
+            }
+            true
+        }
+        Msg::ApplyStyle(style, _) => {
+            if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                if let Some(textarea) = document
+                    .get_element_by_id("static-textarea")
+                    .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok())
+                {
+                    let start_utf16 =
+                        textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                    let end_utf16 =
+                        textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
+
+                    let start = component
+                        .text
+                        .encode_utf16()
+                        .take(start_utf16)
+                        .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+                        .sum();
+                    let end = component
+                        .text
+                        .encode_utf16()
+                        .take(end_utf16)
+                        .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+                        .sum();
+
+                    let styled = match style.as_str() {
+                        "bold" => "**texto**",
+                        "italic" => "*texto*",
+                        "bolditalic" => "***texto***",
+                        "normal" => "texto",
+                        "bulleted_list" => "- texto",
+                        "image" => "[img:url]",
+                        _ => "",
+                    };
+
+                    component.text = format!(
+                        "{}{}{}",
+                        &component.text[..start],
+                        styled,
+                        &component.text[end..]
+                    );
+                    textarea.set_value(&component.text);
+
+                    let text_pos = component.text[start..].find("texto").unwrap_or(0) + start;
+                    let select_start = byte_to_utf16_idx(&component.text, text_pos);
+                    let select_end = byte_to_utf16_idx(&component.text, text_pos + 5);
+
+                    textarea.set_selection_start(Some(select_start)).ok();
+                    textarea.set_selection_end(Some(select_end)).ok();
+                    textarea.focus().ok();
+                }
+            }
+            true
+        }
+        Msg::AutoResize => {
+            component.resize_textarea();
+            if let Some(template) = &mut component.template {
+                template.text = component.text.clone();
+                if let Some(images) = &mut template.images {
+                    images.retain(|img| component.text.contains(&format!("[img:{}]", img.id)));
+                }
+            } else {
+                component.template = Some(Template {
+                    id: String::new(),
+                    text: component.text.clone(),
+                    images: None,
+                });
+            }
+            console_dbg!(
+                "Template json after AutoResize:",
+                serde_json::to_string(&component.template).unwrap_or_default()
+            );
+            false
+        }
+        Msg::OpenFileDialog => {
+            if let Some(input) = component.file_input_ref.cast::<web_sys::HtmlInputElement>() {
+                input.click();
+            }
+            false
+        }
+        Msg::FileSelected(file) => {
+            use uuid::Uuid;
+            let uuid = Uuid::new_v4().to_string();
+
+            if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                if let Some(textarea) = document
+                    .get_element_by_id("static-textarea")
+                    .and_then(|e| e.dyn_into::<HtmlTextAreaElement>().ok())
+                {
+                    let start_utf16 =
+                        textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                    let end_utf16 =
+                        textarea.selection_end().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                    let start = component
+                        .text
+                        .encode_utf16()
+                        .take(start_utf16)
+                        .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+                        .sum();
+                    let end = component
+                        .text
+                        .encode_utf16()
+                        .take(end_utf16)
+                        .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
+                        .sum();
+                    let styled = format!("[img:{}]", uuid);
+                    component.text = format!(
+                        "{}{}{}",
+                        &component.text[..start],
+                        styled,
+                        &component.text[end..]
+                    );
+                    textarea.set_value(&component.text);
+
+                    let file_clone = file.clone();
+                    let link = ctx.link().clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let blob = Blob::from(file_clone);
+                        if let Ok(bytes) = read_as_bytes(&blob).await {
+                            let base64 = general_purpose::STANDARD.encode(&bytes);
+                            link.send_message_batch(vec![
+                                Msg::AutoResize,
+                                Msg::AddImageToTemplate { id: uuid, base64 },
+                            ]);
+                        }
+                    });
+                }
+            }
+            true
+        }
+        Msg::AddImageToTemplate { id, base64 } => {
+            let image = Image { id, base64 };
+            if let Some(template) = &mut component.template {
+                match &mut template.images {
+                    Some(images) => images.push(image),
+                    None => template.images = Some(vec![image]),
+                }
+            } else {
+                component.template = Some(Template {
+                    id: String::new(),
+                    text: component.text.clone(),
+                    images: Some(vec![image]),
+                });
+            }
+            false
+        }
+        Msg::OpenImageDialogWithId(id) => {
+            component.selected_image_id = Some(id);
+            open_top_sheet(component.image_dialog_ref.clone());
+            true
+        }
+        Msg::DeleteImage(id) => {
+            if let Some(template) = &mut component.template {
+                if let Some(images) = &mut template.images {
+                    images.retain(|img| img.id != id);
+                }
+                component.text = component.text.replace(&format!("[img:{}]", id), "");
+                template.text = component.text.clone();
+            }
+            component.selected_image_id = None;
+            close_top_sheet(component.image_dialog_ref.clone());
+            true
+        }
+        Msg::Save => {
+            let template = component.template.get_or_insert_with(|| Template {
+                id: String::new(),
+                text: component.text.clone(),
+                images: None,
+            });
+
+            if template.id.is_empty() {
+                template.id = uuid::Uuid::new_v4().to_string();
+            }
+
+            let template_clone = template.clone();
+            spawn_local(async move {
+                match Request::post("/api/templates/save")
+                    .json(&template_clone)
+                    .unwrap()
+                    .send()
+                    .await
+                {
+                    Ok(response) if response.status() == 200 => {
+                        show_toast("Plantilla guardada correctamente.");
+                    }
+                    Ok(response) => {
+                        show_toast(&format!(
+                            "Error al guardar la plantilla: {}",
+                            response.text().await.unwrap_or_default()
+                        ));
+                    }
+                    Err(err) => {
+                        show_toast(&format!("Error al guardar la plantilla: {}", err));
+                    }
+                }
+            });
+
+            false
+        }
+        Msg::SetTemplate(template_opt) => {
+            component.template = template_opt;
+            true
+        }
+    }
+}

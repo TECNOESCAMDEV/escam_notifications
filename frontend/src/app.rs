@@ -1,4 +1,4 @@
-use crate::components::statics::text::static_text_component::StaticTextComponent;
+use crate::components::statics::text::StaticTextComponent;
 use crate::workspace_grid::WorkspaceGrid;
 use yew::{html, Component, Context, Html};
 
