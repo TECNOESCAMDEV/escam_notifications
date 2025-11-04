@@ -32,7 +32,7 @@ const BUTTON_STYLE: &str = "
                          ";
 
 /// Maximum allowed file size in bytes for image uploads
-const MAX_FILE_SIZE: u32 = 2_000_000;
+const MAX_FILE_SIZE: u32 = 4_000_000;
 
 // Renders a <style> tag with the component styles
 fn style_tag() -> Html {
@@ -337,6 +337,7 @@ impl Component for StaticTextComponent {
                         images.retain(|img| img.id != id);
                     }
                     self.text = self.text.replace(&format!("[img:{}]", id), "");
+                    template.text = self.text.clone(); // Sync text with template
                 }
                 self.selected_image_id = None;
                 close_top_sheet(self.image_dialog_ref.clone());
@@ -581,55 +582,53 @@ impl Component for StaticTextComponent {
     fn rendered(&mut self, ctx: &Context<Self>, first_render: bool) {
         if first_render && !self.loaded {
             self.loaded = true;
-            if let Some(template_id) = ctx.props().template_id.clone() {
+
+            if let Some(template_id) = &ctx.props().template_id {
                 let link = ctx.link().clone();
+                let template_id = template_id.clone();
                 spawn_local(async move {
-                    match Request::get(&format!("/api/templates/{}", template_id))
+                    let response = Request::get(&format!("/api/templates/{}", template_id))
                         .send()
-                        .await
-                    {
-                        Ok(response) if response.status() == 200 => {
-                            if let Ok(template) = response.json::<Template>().await {
-                                link.send_message(Msg::UpdateText(template.text.clone()));
-                                link.send_message(Msg::AutoResize);
-                                link.send_message_batch(vec![Msg::SetTemplate(Some(template))]);
-                                show_toast("Plantilla cargada correctamente.");
-                            } else {
-                                show_toast("Error cargando plantilla. Se creó una nueva.");
+                        .await;
+
+                    match response {
+                        Ok(resp) if resp.status() == 200 => {
+                            if let Ok(template) = resp.json::<Template>().await {
                                 link.send_message_batch(vec![
-                                    Msg::SetTemplate(Some(Template {
-                                        id: uuid::Uuid::new_v4().to_string(),
-                                        text: String::new(),
-                                        images: None,
-                                    })),
-                                    Msg::UpdateText(String::new()),
+                                    Msg::UpdateText(template.text.clone()),
+                                    Msg::SetTemplate(Some(template)),
                                     Msg::SetTab("editor".to_string()),
                                 ]);
+                                show_toast("Plantilla cargada correctamente.");
+                            } else {
+                                create_new_template(link);
                             }
                         }
-                        _ => {
-                            show_toast("Error cargando plantilla. Se creó una nueva.");
-                            link.send_message_batch(vec![
-                                Msg::SetTemplate(Some(Template {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    text: String::new(),
-                                    images: None,
-                                })),
-                                Msg::UpdateText(String::new()),
-                                Msg::SetTab("editor".to_string()),
-                            ]);
-                        }
+                        _ => create_new_template(link),
                     }
                 });
             } else {
+                self.template = Some(create_empty_template());
                 show_toast("No se proporcionó ID de plantilla. Se creó una nueva.");
-                self.template = Some(Template {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    text: String::new(),
-                    images: None,
-                });
             }
         }
+    }
+}
+
+fn create_new_template(link: yew::html::Scope<StaticTextComponent>) {
+    link.send_message_batch(vec![
+        Msg::SetTemplate(Some(create_empty_template())),
+        Msg::UpdateText(String::new()),
+        Msg::SetTab("editor".to_string()),
+    ]);
+    show_toast("Error cargando plantilla. Se creó una nueva.");
+}
+
+fn create_empty_template() -> Template {
+    Template {
+        id: uuid::Uuid::new_v4().to_string(),
+        text: String::new(),
+        images: None,
     }
 }
 
