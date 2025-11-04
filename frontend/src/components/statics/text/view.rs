@@ -213,7 +213,7 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
             for image in images {
                 let img_tag = format!("[img:{}]", image.id);
                 let img_html = format!(
-                    r#"<img src=\"data:image/*;base64,{}\" style=\"max-width:200px;max-height:200px;vertical-align:middle;\" />"#,
+                    r#"<img src="data:image/*;base64,{}" style="max-width:200px;max-height:200px;vertical-align:middle;" />"#,
                     image.base64
                 );
                 html_with_images = html_with_images.replace(&img_tag, &img_html);
