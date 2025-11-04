@@ -1,3 +1,22 @@
+//! Static Text Component
+//!
+//! This module implements a lightweight Markdown-like text editor and previewer
+//! for templates, built with Yew. It supports:
+//! - Live editing with automatic textarea resizing
+//! - Basic formatting shortcuts (normal, bold, italic, bold+italic, bulleted list)
+//! - Embedding images into the text via tokens in the form `[img:{id}]`
+//! - Uploading images (with size limit), storing them as base64, and keeping them
+//!   inside the in-memory `Template`
+//! - A top sheet preview for selected images with an option to delete
+//! - Undo/redo support
+//! - Markdown preview rendered with `pulldown-cmark` and custom handling of newlines
+//! - Synchronization of the editor text with a `Template` value, filtering unused images
+//!
+//! Data model:
+//! - `Template` holds: `id: String`, `text: String`, and `images: Option<Vec<Image>>`.
+//! - `Image` holds: `id: String` and `base64: String` (image bytes encoded as base64, shown via `data:` URLs).
+//! - Images are referenced in the text via `[img:{id}]` placeholders; on preview they are replaced with `<img>` tags.
+
 use crate::tops_sheet::yw_material_top_sheet::{
     close_top_sheet, open_top_sheet, YwMaterialTopSheet,
 };
@@ -14,7 +33,7 @@ use web_sys::{HtmlElement, HtmlTextAreaElement, InputEvent};
 use yew::platform::spawn_local;
 use yew::prelude::*;
 
-// CSS styles for the component UI elements
+/// Inline CSS rules injected into a `<style>` tag to style the component UI.
 const BUTTON_STYLE: &str = "
                              .static-text-root { width: 100%; }
                              .icon-toolbar { display: flex; gap: 16px; margin-bottom: 8px; justify-content: flex-start; }
@@ -31,15 +50,21 @@ const BUTTON_STYLE: &str = "
                              .markdown-preview { font-size: 11px; font-family: Arial, sans-serif; }
                          ";
 
-/// Maximum allowed file size in bytes for image uploads
+/// Maximum allowed file size in bytes for image uploads.
 const MAX_FILE_SIZE: u32 = 4_000_000;
 
-// Renders a <style> tag with the component styles
+/// Renders a `<style>` tag with the component styles.
 fn style_tag() -> Html {
     html! { <style>{BUTTON_STYLE}</style> }
 }
 
-// Renders an icon button with a label and click callback
+/// Renders an icon button with a label and click callback.
+///
+/// Parameters:
+/// - `icon_name`: Material icon name.
+/// - `label`: Button label shown under the icon (Spanish, user-facing).
+/// - `on_click`: Click event callback.
+/// - `wide`: Whether to render a wider button variant.
 fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wide: bool) -> Html {
     let class = if wide { "icon-btn wide" } else { "icon-btn" };
     html! {
@@ -50,6 +75,13 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
     }
 }
 
+/// Returns the image token id at the cursor position, if the cursor is inside a token.
+///
+/// This detects tokens shaped as `[img:some-id]`. The `cursor_pos_utf16` must be
+/// provided in UTF-16 code units (as returned by DOM selection APIs). It converts
+/// the selection to a byte offset to compare with the token span within `text`.
+///
+/// Returns `Some(id)` if the cursor is within an image token, otherwise `None`.
 fn get_img_tag_id_at_cursor(text: &str, cursor_pos_utf16: usize) -> Option<String> {
     let cursor_pos_byte = text
         .encode_utf16()
@@ -69,46 +101,72 @@ fn get_img_tag_id_at_cursor(text: &str, cursor_pos_utf16: usize) -> Option<Strin
     None
 }
 
-// Message enum for component state changes
+/// Messages used to drive component state changes.
 pub enum Msg {
-    SetTab(String),              // Switches between editor and preview tabs
-    UpdateText(String),          // Updates the text in the editor
-    Undo,                        // Undo last change
-    Redo,                        // Redo change
-    ApplyStyle(String, ()),      // Applies markdown style to selected text
-    AutoResize,                  // Automatically resizes the textarea
-    OpenFileDialog,              // Opens the file selection dialog
-    FileSelected(web_sys::File), // Handles selected file
-    AddImageToTemplate { id: String, base64: String }, // Adds image to template
-    OpenImageDialogWithId(String), // Opens image dialog for a specific image ID
-    DeleteImage(String),         // Deletes an image from the template
-    Save,                        // Saves the current template
+    /// Switches between editor and preview tabs.
+    SetTab(String),
+    /// Updates the text in the editor and records history for undo/redo.
+    UpdateText(String),
+    /// Undo last text change.
+    Undo,
+    /// Redo last undone text change.
+    Redo,
+    /// Applies a formatting style to the selected text.
+    /// Supported: "bold", "italic", "bolditalic", "normal", "bulleted_list", "image".
+    ApplyStyle(String, ()),
+    /// Triggers automatic resizing of the textarea to fit its content.
+    AutoResize,
+    /// Opens the file selection dialog.
+    OpenFileDialog,
+    /// Handles a file selected by the user (image upload).
+    FileSelected(web_sys::File),
+    /// Adds an image to the current template (base64-encoded bytes).
+    AddImageToTemplate { id: String, base64: String },
+    /// Opens the image viewer dialog for the provided token id.
+    OpenImageDialogWithId(String),
+    /// Deletes the image from the template and removes its token from the text.
+    DeleteImage(String),
+    /// Persists the current template to the backend API.
+    Save,
+    /// Sets or replaces the current template.
     SetTemplate(Option<Template>),
 }
 
-// Properties struct
+/// Component properties for `StaticTextComponent`.
 #[derive(Properties, PartialEq, Clone)]
 pub struct StaticTextProps {
+    /// Optional template ID to load from the backend on first render.
     #[prop_or_default]
-    pub template_id: Option<String>, // Optional template ID to load
+    pub template_id: Option<String>,
 }
 
-// Component state struct
+/// Internal component state for the static text editor/previewer.
 pub struct StaticTextComponent {
-    text: String,                      // Current text in the editor
-    history: Vec<String>,              // Undo/redo history
-    history_index: usize,              // Current position in history
-    active_tab: String,                // Selected tab ("editor" or "preview")
-    textarea_ref: NodeRef,             // Reference to the textarea element
-    file_input_ref: NodeRef,           // Reference to the file input element
-    image_dialog_ref: NodeRef,         // Reference to the image viewer dialog
-    template: Option<Template>,        // Optional template to sync text with
-    selected_image_id: Option<String>, // Currently selected image ID
-    loaded: bool,                      // Flag to indicate if the template has been loaded
+    /// Current raw text in the editor.
+    text: String,
+    /// History of text states for undo/redo.
+    history: Vec<String>,
+    /// Current index within the history buffer.
+    history_index: usize,
+    /// Selected tab: "editor" or "preview".
+    active_tab: String,
+    /// Reference to the textarea element for direct DOM operations.
+    textarea_ref: NodeRef,
+    /// Reference to the hidden file input element (image uploads).
+    file_input_ref: NodeRef,
+    /// Reference to the top sheet dialog used for image view/delete.
+    image_dialog_ref: NodeRef,
+    /// Current template synchronized with the editor text and images.
+    template: Option<Template>,
+    /// Currently selected image id (if any) to show in the dialog.
+    selected_image_id: Option<String>,
+    /// Indicates whether initial loading has been performed.
+    loaded: bool,
 }
 
 impl StaticTextComponent {
-    /// Resizes the textarea to fit its content automatically.
+    /// Resize the textarea to fit its content by adjusting the `height` style
+    /// to the element's `scrollHeight`.
     fn resize_textarea(&self) {
         if let Some(textarea) = self.textarea_ref.cast::<HtmlTextAreaElement>() {
             if let Ok(html_elem) = textarea.clone().dyn_into::<HtmlElement>() {
@@ -125,7 +183,7 @@ impl Component for StaticTextComponent {
     type Message = Msg;
     type Properties = StaticTextProps;
 
-    // Initializes the component state
+    /// Initialize the component with an empty template, editor text, and default UI state.
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
             text: String::new(),
@@ -141,10 +199,9 @@ impl Component for StaticTextComponent {
         }
     }
 
-    // Handles state updates based on messages
+    /// Handle all state updates and side effects triggered by messages.
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            // Updates text and history
             Msg::UpdateText(new_text) => {
                 if self.text != new_text {
                     self.text = new_text.clone();
@@ -154,7 +211,6 @@ impl Component for StaticTextComponent {
                 }
                 true
             }
-            // Undo last change
             Msg::Undo => {
                 if self.history_index > 0 {
                     self.history_index -= 1;
@@ -162,7 +218,6 @@ impl Component for StaticTextComponent {
                 }
                 true
             }
-            // Redo change
             Msg::Redo => {
                 if self.history_index + 1 < self.history.len() {
                     self.history_index += 1;
@@ -170,7 +225,6 @@ impl Component for StaticTextComponent {
                 }
                 true
             }
-            // Switches between editor and preview tabs
             Msg::SetTab(tab) => {
                 self.active_tab = tab;
                 if self.active_tab == "editor" {
@@ -184,7 +238,6 @@ impl Component for StaticTextComponent {
                 }
                 true
             }
-            // Applies markdown style to selected text
             Msg::ApplyStyle(style, _) => {
                 if let Some(document) = web_sys::window().and_then(|w| w.document()) {
                     if let Some(textarea) = document
@@ -235,7 +288,6 @@ impl Component for StaticTextComponent {
                 }
                 true
             }
-            // Automatically resizes the textarea based on content and syncs text with template
             Msg::AutoResize => {
                 self.resize_textarea();
                 if let Some(template) = &mut self.template {
@@ -388,7 +440,7 @@ impl Component for StaticTextComponent {
         }
     }
 
-    // Renders the component UI
+    /// Render the component: toolbar, tab bar, editor textarea, and preview.
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
         // Converts Markdown text to HTML for preview.
@@ -522,6 +574,7 @@ impl Component for StaticTextComponent {
                                         if let Some(files) = input.files() {
                                             if let Some(file) = files.get(0) {
                                                 if file.size() > MAX_FILE_SIZE.into() {
+                                                    // User-facing warning in Spanish per requisito.
                                                     show_toast("El archivo es demasiado grande (máx. {} MB).".replace("{}", &(MAX_FILE_SIZE / 1_000_000).to_string()).as_str());
                                                     return Msg::AutoResize;
                                                 }
@@ -579,6 +632,8 @@ impl Component for StaticTextComponent {
         }
     }
 
+    /// After the first render, optionally load a template by id from the backend.
+    /// If loading fails or no id is provided, a new empty template is created.
     fn rendered(&mut self, ctx: &Context<Self>, first_render: bool) {
         if first_render && !self.loaded {
             self.loaded = true;
@@ -615,6 +670,7 @@ impl Component for StaticTextComponent {
     }
 }
 
+/// Helper to create and set a new empty template in the component via batched messages.
 fn create_new_template(link: yew::html::Scope<StaticTextComponent>) {
     link.send_message_batch(vec![
         Msg::SetTemplate(Some(create_empty_template())),
@@ -624,6 +680,7 @@ fn create_new_template(link: yew::html::Scope<StaticTextComponent>) {
     show_toast("Error cargando plantilla. Se creó una nueva.");
 }
 
+/// Build a new `Template` with a generated id, empty text, and no images.
 fn create_empty_template() -> Template {
     Template {
         id: uuid::Uuid::new_v4().to_string(),
@@ -632,6 +689,11 @@ fn create_empty_template() -> Template {
     }
 }
 
+/// Show a transient toast message centered at the bottom of the viewport.
+///
+/// Notes:
+/// - Messages are intentionally kept in Spanish (user-facing requirement).
+/// - The toast is removed automatically after ~3 seconds.
 fn show_toast(message: &str) {
     if let Some(window) = web_sys::window() {
         if let Some(document) = window.document() {
@@ -661,6 +723,11 @@ fn show_toast(message: &str) {
         }
     }
 }
+
+/// Convert a byte index within a UTF-8 `&str` to a UTF-16 code unit index.
+///
+/// This is useful for synchronizing Rust string positions with DOM selection
+/// APIs that operate in UTF-16 code units.
 fn byte_to_utf16_idx(s: &str, byte_idx: usize) -> u32 {
     s[..byte_idx].encode_utf16().count() as u32
 }
