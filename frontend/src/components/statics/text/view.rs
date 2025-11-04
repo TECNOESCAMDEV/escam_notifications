@@ -1,3 +1,15 @@
+//! View rendering for the static text editor component.
+//!
+//! The UI is split across two tabs: "Editor" (a growing `<textarea>`) and
+//! "Previsualización" (a markdown preview). A simple icon toolbar provides
+//! formatting actions and image insertion. Inline images are represented by
+//! `[img:<id>]` tags in the text, resolved to `<img>` elements in the preview.
+//!
+//! Notes
+//! - All user-facing messages remain in Spanish by design.
+//! - The preview pipeline performs a whitespace-preserving trick: runs of multiple
+//!   newlines are temporarily replaced, parsed by `pulldown_cmark`, then expanded
+//!   into repeated `<br>` tags to emulate a loose paragraph style.
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
 use wasm_bindgen::JsCast;
@@ -13,6 +25,7 @@ use crate::tops_sheet::yw_material_top_sheet::close_top_sheet;
 
 const MAX_FILE_SIZE: u32 = 4_000_000;
 
+/// Top-level view function called by the component's `view()` method.
 pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>) -> Html {
     let link = ctx.link();
     let preview_html = compute_preview_html(component);
@@ -156,6 +169,7 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
     }
 }
 
+/// Small helper to render a toolbar button with a Material icon and a label.
 fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wide: bool) -> Html {
     let class = if wide { "icon-btn wide" } else { "icon-btn" };
     html! {
@@ -166,6 +180,14 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
     }
 }
 
+/// Produces the HTML used by the preview tab.
+///
+/// Steps
+/// 1. Replace raw newlines with " \n" to help the markdown parser preserve spacing.
+/// 2. Compress 2+ newline sequences into a temporary marker (e.g., "br3").
+/// 3. Parse the marked text with `pulldown_cmark` to HTML.
+/// 4. Expand markers back into repeated `<br>` tags.
+/// 5. Replace `[img:<id>]` placeholders with `<img src="data:...">` for template images.
 fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
     let text_with_spaces = component.text.replace("\n", " \n");
 
@@ -191,7 +213,7 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
             for image in images {
                 let img_tag = format!("[img:{}]", image.id);
                 let img_html = format!(
-                    r#"<img src="data:image/*;base64,{}" style="max-width:200px;max-height:200px;vertical-align:middle;" />"#,
+                    r#"<img src=\"data:image/*;base64,{}\" style=\"max-width:200px;max-height:200px;vertical-align:middle;\" />"#,
                     image.base64
                 );
                 html_with_images = html_with_images.replace(&img_tag, &img_html);

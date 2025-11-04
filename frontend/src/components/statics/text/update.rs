@@ -1,3 +1,17 @@
+//! Update function for the static text editor component.
+//!
+//! This module contains a single `update` function following an Elm-style architecture:
+//! it receives the current `StaticTextComponent` state, the `Context`, and a `Msg`,
+//! mutates the state accordingly, and returns a `bool` indicating whether the view should
+//! re-render.
+//!
+//! Key behaviors
+//! - Text editing with undo/redo history.
+//! - Applying style snippets (markdown-like) at the current selection.
+//! - Auto-resizing the textarea and syncing the backing `Template` model.
+//! - Handling image insertion: upload -> base64 -> `[img:<uuid>]` tag -> template images list.
+//! - Deleting images, which removes both the asset and its inline tag.
+//! - Persisting the template via a backend POST, with user-facing toast messages (Spanish).
 use base64::{engine::general_purpose, Engine as _};
 use gloo_console::console_dbg;
 use gloo_file::{futures::read_as_bytes, Blob};
@@ -17,6 +31,12 @@ use super::helpers::{byte_to_utf16_idx, show_toast};
 use super::messages::Msg;
 use super::state::StaticTextComponent;
 
+/// Central update function for the component.
+///
+/// Contract
+/// - Mutates `component` based on `msg`.
+/// - May dispatch further messages via `ctx.link()` (e.g., async callbacks).
+/// - Returns `true` to re-render the view, `false` to short-circuit when only side-effects occur.
 pub fn update(
     component: &mut StaticTextComponent,
     ctx: &Context<StaticTextComponent>,

@@ -1,3 +1,12 @@
+//! Static text editor: root module wiring the Yew `Component` implementation
+//! with submodules for state, update logic, view rendering, and helpers.
+//!
+//! Responsibilities
+//! - Re-export selected types (`Msg`, `StaticTextProps`, `StaticTextComponent`).
+//! - Provide the `Component` implementation that delegates to `update::update` and `view::view`.
+//! - On first render, load an existing template (if `template_id` is provided) or
+//!   create a fresh one and notify users via toast messages (in Spanish).
+
 use gloo_net::http::Request;
 use yew::platform::spawn_local;
 use yew::prelude::*;

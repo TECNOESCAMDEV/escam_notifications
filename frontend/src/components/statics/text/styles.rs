@@ -1,3 +1,8 @@
+//! CSS styles used by the static text editor.
+//!
+//! `BUTTON_STYLE` is injected as a `<style>` element by `style_tag()`. It defines
+//! toolbar layout, tab bar appearance, and base typography for the editor and preview.
+
 use yew::prelude::*;
 
 pub const BUTTON_STYLE: &str = "
@@ -16,6 +21,7 @@ pub const BUTTON_STYLE: &str = "
 .markdown-preview { font-size: 11px; font-family: Arial, sans-serif; }
 ";
 
+/// Returns a `<style>` element that injects the editor's CSS rules into the page.
 pub fn style_tag() -> Html {
     html! { <style>{BUTTON_STYLE}</style> }
 }
