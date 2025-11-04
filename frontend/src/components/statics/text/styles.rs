@@ -17,7 +17,20 @@ pub const BUTTON_STYLE: &str = "
 .tab-btn { background: #f5f5f5; border: none; border-radius: 4px 4px 0 0; padding: 6px 18px; cursor: pointer; font-size: 14px; color: #555; margin-bottom: -1px; border-bottom: 2px solid transparent; transition: background 0.2s, border-bottom 0.2s; }
 .tab-btn.active { background: #fff; color: #222; border-bottom: 2px solid #1976d2; font-weight: bold; }
 .tab-btn:hover { background: #e0e0e0; }
-#static-textarea { font-size: 11px; font-family: Arial, sans-serif; }
+.line-numbers {
+    border-right: 1px solid #eee;
+    padding-top: 0px;
+}
+.line-number {
+    height: 1.5em;
+    line-height: 0.5em;
+}
+#static-textarea {
+    font-size: 11px;
+    font-family: Arial, sans-serif;
+    line-height: 1.5em;
+    padding-top: 0px;
+}
 .markdown-preview { font-size: 11px; font-family: Arial, sans-serif; }
 ";
 

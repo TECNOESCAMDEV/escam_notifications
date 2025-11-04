@@ -33,6 +33,11 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
     let make_style_callback =
         |style: &'static str| link.callback(move |_| Msg::ApplyStyle(style.to_string(), ()));
 
+    let line_count = component.text.lines().count().max(1);
+    let line_numbers = (1..=line_count)
+        .map(|n| html! { <div class="line-number">{n}</div> })
+        .collect::<Html>();
+
     html! {
         <div class="static-text-root">
             { style_tag() }
@@ -63,47 +68,58 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
                 if component.active_tab == "editor" {
                     html! {
                         <>
-                            <textarea
-                                id="static-textarea"
-                                ref={component.textarea_ref.clone()}
-                                value={component.text.clone()}
-                                spellcheck="false"
-                                oninput={link.batch_callback(|e: InputEvent| {
-                                    let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
-                                    vec![ Msg::UpdateText(value), Msg::AutoResize ]
-                                })}
-                                onkeydown={link.batch_callback(|e: KeyboardEvent| {
-                                    let textarea = e.target_unchecked_into::<HtmlTextAreaElement>();
-                                    let text = textarea.value();
-                                    let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                                    let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
-                                    if get_img_tag_id_at_cursor(&text, cursor_pos).is_some() && !arrow_keys.contains(&e.key().as_str()) {
-                                        e.prevent_default();
-                                        vec![]
-                                    } else if e.ctrl_key() && e.key() == "z" {
-                                        vec![Msg::Undo]
-                                    } else if e.ctrl_key() && e.key() == "y" {
-                                        vec![Msg::Redo]
-                                    } else {
-                                        vec![]
-                                    }
-                                })}
-                                onselect={link.callback(|e: Event| {
-                                    let id_opt = e.target()
-                                        .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
-                                        .and_then(|textarea| {
-                                            let text = textarea.value();
-                                            let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                                            super::helpers::get_img_tag_id_at_cursor(&text, cursor_pos)
-                                        });
-                                    match id_opt {
-                                        Some(id) => Msg::OpenImageDialogWithId(id),
-                                        None => Msg::AutoResize,
-                                    }
-                                })}
-                                rows={1}
-                                style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
-                            />
+                            <div style="display: flex; align-items: flex-start;">
+                                <div
+                                    class="line-numbers"
+                                    style="user-select:none; text-align:right; padding:8px 4px 8px 0; color:#aaa; background:#fafafa; font-size:11px; font-family:monospace; min-width:32px;"
+                                >
+                                    { line_numbers }
+                                </div>
+                                <textarea
+                                    id="static-textarea"
+                                    ref={component.textarea_ref.clone()}
+                                    value={component.text.clone()}
+                                    spellcheck="false"
+                                    oninput={link.batch_callback(|e: InputEvent| {
+                                        let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
+                                        vec![ Msg::UpdateText(value), Msg::AutoResize ]
+                                    })}
+                                    onscroll={link.callback(|_: Event| {
+                                        Msg::AutoResize
+                                    })}
+                                    onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                                        let textarea = e.target_unchecked_into::<HtmlTextAreaElement>();
+                                        let text = textarea.value();
+                                        let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                                        let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+                                        if get_img_tag_id_at_cursor(&text, cursor_pos).is_some() && !arrow_keys.contains(&e.key().as_str()) {
+                                            e.prevent_default();
+                                            vec![]
+                                        } else if e.ctrl_key() && e.key() == "z" {
+                                            vec![Msg::Undo]
+                                        } else if e.ctrl_key() && e.key() == "y" {
+                                            vec![Msg::Redo]
+                                        } else {
+                                            vec![]
+                                        }
+                                    })}
+                                    onselect={link.callback(|e: Event| {
+                                        let id_opt = e.target()
+                                            .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
+                                            .and_then(|textarea| {
+                                                let text = textarea.value();
+                                                let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                                                super::helpers::get_img_tag_id_at_cursor(&text, cursor_pos)
+                                            });
+                                        match id_opt {
+                                            Some(id) => Msg::OpenImageDialogWithId(id),
+                                            None => Msg::AutoResize,
+                                        }
+                                    })}
+                                    rows={1}
+                                    style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
+                                />
+                            </div>
                             <input
                                 type="file"
                                 accept="image/*"
