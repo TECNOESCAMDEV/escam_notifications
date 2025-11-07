@@ -1,11 +1,15 @@
+use crate::components::statics::text::helpers::show_toast;
 use crate::components::statics::text::{Msg, StaticTextComponent};
-use crate::tops_sheet::yw_material_top_sheet::close_top_sheet;
+use crate::tops_sheet::yw_material_top_sheet::{close_top_sheet, YwMaterialTopSheet};
+use web_sys::Event;
 use yew::html::Scope;
 use yew::prelude::*;
 
+const MAX_FILE_SIZE: u32 = 4_000_000;
+
 pub fn image_dialog(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
     html! {
-        <crate::tops_sheet::yw_material_top_sheet::YwMaterialTopSheet node_ref={component.image_dialog_ref.clone()}>
+        <YwMaterialTopSheet node_ref={component.image_dialog_ref.clone()}>
             <div style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;">
                 <button
                     onclick={{
@@ -16,6 +20,28 @@ pub fn image_dialog(component: &StaticTextComponent, link: &Scope<StaticTextComp
                 >
                     { "✕" }
                 </button>
+                // Input for selecting image file
+                <input
+                    type="file"
+                    accept="image/*"
+                    ref={component.file_input_ref.clone()}
+                    style="display: none;"
+                    onchange={link.callback(|e: Event| {
+                        let input = e.target_unchecked_into::<web_sys::HtmlInputElement>();
+                        if let Some(files) = input.files() {
+                            if let Some(file) = files.get(0) {
+                                if file.size() > MAX_FILE_SIZE.into() {
+                                    show_toast(
+                                        &format!("El archivo es demasiado grande (máx. {} MB).", MAX_FILE_SIZE / 1_000_000)
+                                    );
+                                    return Msg::AutoResize;
+                                }
+                                return Msg::FileSelected(file);
+                            }
+                        }
+                        Msg::AutoResize
+                    })}
+                />
                 {
                     if let Some(id) = &component.selected_image_id {
                         let id_cloned = id.clone();
@@ -39,6 +65,6 @@ pub fn image_dialog(component: &StaticTextComponent, link: &Scope<StaticTextComp
                     } else { html! { <span style="color:#fff;">{"No hay imagen seleccionada"}</span> } }
                 }
             </div>
-        </crate::tops_sheet::yw_material_top_sheet::YwMaterialTopSheet>
+        </YwMaterialTopSheet>
     }
 }

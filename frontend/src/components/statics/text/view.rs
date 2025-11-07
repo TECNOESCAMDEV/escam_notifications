@@ -10,7 +10,7 @@
 //! - The preview pipeline performs a whitespace-preserving trick: runs of multiple
 //!   newlines are temporarily replaced, parsed by `pulldown_cmark`, then expanded
 //!   into repeated `<br>` tags to emulate a loose paragraph style.
-use super::helpers::{get_img_tag_id_at_cursor, show_toast};
+use super::helpers::get_img_tag_id_at_cursor;
 use super::messages::Msg;
 use super::state::StaticTextComponent;
 use super::styles::style_tag;
@@ -20,8 +20,6 @@ use regex::Regex;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlTextAreaElement, InputEvent};
 use yew::prelude::*;
-
-const MAX_FILE_SIZE: u32 = 4_000_000;
 
 /// Top-level view function called by the component's `view()` method.
 pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>) -> Html {
@@ -118,25 +116,6 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
                                     style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
                                 />
                             </div>
-                            <input
-                                type="file"
-                                accept="image/*"
-                                ref={component.file_input_ref.clone()}
-                                style="display: none;"
-                                onchange={link.callback(|e: Event| {
-                                    let input = e.target_unchecked_into::<web_sys::HtmlInputElement>();
-                                    if let Some(files) = input.files() {
-                                        if let Some(file) = files.get(0) {
-                                            if file.size() > MAX_FILE_SIZE.into() {
-                                                show_toast("El archivo es demasiado grande (máx. {} MB).".replace("{}", &(MAX_FILE_SIZE / 1_000_000).to_string()).as_str());
-                                                return Msg::AutoResize;
-                                            }
-                                            return Msg::FileSelected(file);
-                                        }
-                                    }
-                                    Msg::AutoResize
-                                })}
-                            />
                             { image_dialog(component, link) }
                         </>
                     }
