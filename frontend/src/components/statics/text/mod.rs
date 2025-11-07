@@ -18,6 +18,7 @@ mod state;
 mod styles;
 mod update;
 mod view;
+mod dialogs;
 
 use helpers::{create_empty_template, show_toast};
 pub use messages::Msg;
