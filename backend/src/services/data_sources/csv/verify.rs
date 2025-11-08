@@ -35,7 +35,7 @@ async fn schedule_verify_job(jobs_state: Data<JobsState>) -> Result<String, Stri
 async fn verify_csv_data(tx: mpsc::Sender<JobUpdate>, job_id: String) -> Result<(), String> {
     // Simulate verification process
     for progress in 1..=100 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         tx.send(JobUpdate {
             job_id: job_id.clone(),
             status: JobStatus::InProgress(progress),
