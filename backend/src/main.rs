@@ -58,6 +58,7 @@ async fn main() -> std::io::Result<()> {
         tx,
     };
 
+    // Start job updater task
     let updater_state = jobs_state.clone();
     tokio::spawn(async move {
         job_controller::state::start_job_updater(updater_state, rx).await;
