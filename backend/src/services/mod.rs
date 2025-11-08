@@ -1,2 +1,2 @@
 pub(crate) mod templates;
-mod data_sources;
+pub(crate) mod data_sources;

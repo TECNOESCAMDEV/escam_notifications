@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 
@@ -7,7 +8,7 @@ pub struct JobsState {
     pub tx: mpsc::Sender<JobUpdate>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum JobStatus {
     Pending,
     InProgress(u8),
@@ -17,8 +18,8 @@ pub enum JobStatus {
 
 #[derive(Debug)]
 pub struct JobUpdate {
-    job_id: String,
-    status: JobStatus,
+    pub(crate) job_id: String,
+    pub(crate) status: JobStatus,
 }
 
 pub async fn start_job_updater(state: JobsState, mut rx: mpsc::Receiver<JobUpdate>) {

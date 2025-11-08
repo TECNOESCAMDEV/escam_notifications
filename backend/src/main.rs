@@ -71,6 +71,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::JsonConfig::default().limit(10 * 1024 * 1024)) // 10 MB
             .app_data(web::Data::new(jobs_state.clone()))
             .service(services::templates::configure_routes())
+            .service(services::data_sources::csv::configure_routes())
             .default_service(web::route().to(serve_embedded))
     })
         .bind((host, port))?
