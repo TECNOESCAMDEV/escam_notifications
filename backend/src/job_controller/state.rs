@@ -11,7 +11,7 @@ pub struct JobsState {
 #[derive(Clone, Debug, Serialize)]
 pub enum JobStatus {
     Pending,
-    InProgress(u8),
+    InProgress(u32),
     Completed(String),
     Failed(String),
 }
