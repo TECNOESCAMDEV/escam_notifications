@@ -101,9 +101,7 @@ async fn verify_csv_data(
             if let Some(invalid_row_number) =
                 find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
             {
-                report_first_invalid_row(&tx, &job_id, invalid_row_number).await?;
-                let duration = start.elapsed();
-                println!("verify_csv_data finished in: {:.2?}", duration);
+                handle_invalid_row(&tx, &job_id, invalid_row_number, start).await?;
                 return Ok(());
             }
             lines_processed += chunk.len();
@@ -124,9 +122,7 @@ async fn verify_csv_data(
         if let Some(invalid_row_number) =
             find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
         {
-            report_first_invalid_row(&tx, &job_id, invalid_row_number).await?;
-            let duration = start.elapsed();
-            println!("verify_csv_data finished in: {:.2?}", duration);
+            handle_invalid_row(&tx, &job_id, invalid_row_number, start).await?;
             return Ok(());
         }
     }
@@ -167,4 +163,16 @@ async fn report_first_invalid_row(
     })
         .await
         .map_err(|e| e.to_string())
+}
+
+async fn handle_invalid_row(
+    tx: &mpsc::Sender<JobUpdate>,
+    job_id: &str,
+    invalid_row_number: usize,
+    start: Instant,
+) -> Result<(), String> {
+    report_first_invalid_row(tx, job_id, invalid_row_number).await?;
+    let duration = start.elapsed();
+    println!("verify_csv_data finished in: {:.2?}", duration);
+    Ok(())
 }
