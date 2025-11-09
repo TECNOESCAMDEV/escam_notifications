@@ -93,14 +93,7 @@ async fn verify_csv_data(
             if let Some(invalid_row_number) =
                 find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
             {
-                let msg = format!("First invalid row at: {}", invalid_row_number);
-                tx.send(JobUpdate {
-                    job_id: job_id.clone(),
-                    status: JobStatus::Failed(msg),
-                })
-                    .await
-                    .map_err(|e| e.to_string())?;
-
+                report_first_invalid_row(&tx, &job_id, invalid_row_number).await?;
                 return Ok(());
             }
             lines_processed += chunk.len();
@@ -120,15 +113,7 @@ async fn verify_csv_data(
         if let Some(invalid_row_number) =
             find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
         {
-            let msg = format!("First invalid row at: {}", invalid_row_number);
-
-            tx.send(JobUpdate {
-                job_id: job_id.clone(),
-                status: JobStatus::Failed(msg),
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-
+            report_first_invalid_row(&tx, &job_id, invalid_row_number).await?;
             return Ok(());
         }
     }
@@ -150,4 +135,18 @@ fn validate_value(var_type: &VariableType, value: &str) -> bool {
         VariableType::Currency => value.parse::<f64>().is_ok(),
         VariableType::Email => value.contains('@') && value.contains('.'),
     }
+}
+
+async fn report_first_invalid_row(
+    tx: &mpsc::Sender<JobUpdate>,
+    job_id: &str,
+    invalid_row_number: usize,
+) -> Result<(), String> {
+    let msg = format!("First invalid row at: {}", invalid_row_number);
+    tx.send(JobUpdate {
+        job_id: job_id.to_string(),
+        status: JobStatus::Failed(msg),
+    })
+        .await
+        .map_err(|e| e.to_string())
 }
