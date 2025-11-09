@@ -90,17 +90,18 @@ async fn verify_csv_data(
         let line = line.map_err(|e| e.to_string())?;
         chunk.push((i, line));
         if chunk.len() == chunk_size {
-            if let Some(invalid_idx) =
+            if let Some(invalid_row_number) =
                 find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
             {
-                let msg = format!("First invalid row at: {}", invalid_idx);
+                let msg = format!("First invalid row at: {}", invalid_row_number);
                 tx.send(JobUpdate {
                     job_id: job_id.clone(),
-                    status: JobStatus::Completed(msg),
+                    status: JobStatus::Failed(msg),
                 })
                     .await
                     .map_err(|e| e.to_string())?;
-                return Err("Validation failed".to_string());
+
+                return Ok(());
             }
             lines_processed += chunk.len();
             chunk.clear();
@@ -116,17 +117,19 @@ async fn verify_csv_data(
 
     // Check last chunk
     if !chunk.is_empty() {
-        if let Some(invalid_idx) =
+        if let Some(invalid_row_number) =
             find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
         {
-            let msg = format!("First invalid row at: {}", invalid_idx);
+            let msg = format!("First invalid row at: {}", invalid_row_number);
+
             tx.send(JobUpdate {
                 job_id: job_id.clone(),
-                status: JobStatus::Completed(msg),
+                status: JobStatus::Failed(msg),
             })
             .await
             .map_err(|e| e.to_string())?;
-            return Err("Validation failed".to_string());
+
+            return Ok(());
         }
     }
 
