@@ -1,9 +1,10 @@
 use crate::job_controller::state::{JobStatus, JobUpdate, JobsState};
 use actix_web::{web, HttpResponse, Responder};
 use common::model::variable::VariableType;
-use csv::ReaderBuilder;
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use tokio::sync::mpsc;
 
@@ -39,8 +40,8 @@ async fn schedule_verify_job(
     }
 
     let tx = jobs_state.tx.clone();
-
     let value = job_id.clone();
+
     tokio::spawn(async move {
         if let Err(e) = verify_csv_data(tx, value.clone(), req).await {
             let mut jobs = jobs_state.jobs.write().await;
@@ -51,78 +52,91 @@ async fn schedule_verify_job(
     Ok(job_id)
 }
 
-/// Verifies the CSV file data according to the variable type and column index
+/// Processes a chunk and returns the first invalid row index, if any
+fn find_first_invalid_in_chunk(
+    chunk: &[(usize, String)],
+    column_index: usize,
+    var_type: &VariableType,
+) -> Option<usize> {
+    chunk.par_iter().find_map_any(|(idx, line)| {
+        let record = csv::StringRecord::from(line.split(';').collect::<Vec<_>>());
+        if column_index >= record.len() || !validate_value(var_type, &record[column_index]) {
+            Some(idx + 1)
+        } else {
+            None
+        }
+    })
+}
+
+/// Verifies the CSV file data and fails at the first invalid line
 async fn verify_csv_data(
     tx: mpsc::Sender<JobUpdate>,
     job_id: String,
     req: VerifyCsvRequest,
 ) -> Result<(), String> {
-    // Build file path
     let file_path = format!("./{}.csv", req.uuid);
     if !Path::new(&file_path).exists() {
         return Err("CSV file not found".to_string());
     }
 
-    // Open CSV file
     let file = File::open(&file_path).map_err(|e| e.to_string())?;
-    let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+    let reader = BufReader::new(file);
 
-    let mut invalid_rows = Vec::new();
-    let mut total_rows = 0usize;
+    let chunk_size = 10_000;
+    let mut chunk = Vec::with_capacity(chunk_size);
+    let mut lines_processed = 0usize;
 
-    // Iterate efficiently over CSV records
-    for (i, result) in rdr.records().enumerate() {
-        let record = result.map_err(|e| e.to_string())?;
-        total_rows += 1;
-
-        // Check if column exists
-        if req.column_index >= record.len() {
-            return Err(format!(
-                "Column index {} out of bounds at row {}",
-                req.column_index,
-                i + 1
-            ));
-        }
-
-        let value = &record[req.column_index];
-        if !validate_value(&req.var_type, value) {
-            invalid_rows.push(i + 1);
-        }
-
-        // Report progress every 100 rows
-        if (i + 1) % 100 == 0 {
-            let progress: u32 = (((i + 1) * 100 / total_rows.max(1)) as u32)
-                .try_into()
-                .map_err(|_| "Failed to convert progress value to u32")?;
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| e.to_string())?;
+        chunk.push((i, line));
+        if chunk.len() == chunk_size {
+            if let Some(invalid_idx) =
+                find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
+            {
+                let msg = format!("First invalid row at: {}", invalid_idx);
+                tx.send(JobUpdate {
+                    job_id: job_id.clone(),
+                    status: JobStatus::Completed(msg),
+                })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                return Err("Validation failed".to_string());
+            }
+            lines_processed += chunk.len();
+            chunk.clear();
 
             tx.send(JobUpdate {
                 job_id: job_id.clone(),
-                status: JobStatus::InProgress(progress),
+                status: JobStatus::InProgress(lines_processed as u32),
             })
-            .await
-            .map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
 
-    // Final status
-    if invalid_rows.is_empty() {
-        tx.send(JobUpdate {
-            job_id: job_id.clone(),
-            status: JobStatus::Completed("Verification successful".to_string()),
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    } else {
-        let msg = format!("Invalid rows at: {:?}", invalid_rows);
-        tx.send(JobUpdate {
-            job_id: job_id.clone(),
-            status: JobStatus::Completed(msg),
-        })
+    // Check last chunk
+    if !chunk.is_empty() {
+        if let Some(invalid_idx) =
+            find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
+        {
+            let msg = format!("First invalid row at: {}", invalid_idx);
+            tx.send(JobUpdate {
+                job_id: job_id.clone(),
+                status: JobStatus::Completed(msg),
+            })
             .await
             .map_err(|e| e.to_string())?;
-        Err("Some rows failed validation".to_string())
+            return Err("Validation failed".to_string());
+        }
     }
+
+    tx.send(JobUpdate {
+        job_id: job_id.clone(),
+        status: JobStatus::Completed("Verification successful".to_string()),
+    })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Validates a value according to the VariableType
@@ -131,9 +145,6 @@ fn validate_value(var_type: &VariableType, value: &str) -> bool {
         VariableType::Text => true,
         VariableType::Number => value.parse::<f64>().is_ok(),
         VariableType::Currency => value.parse::<f64>().is_ok(),
-        VariableType::Email => {
-            // Simple email validation
-            value.contains('@') && value.contains('.')
-        }
+        VariableType::Email => value.contains('@') && value.contains('.'),
     }
 }
