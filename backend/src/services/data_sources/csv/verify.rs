@@ -6,14 +6,21 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
-/// Input structure for CSV verification
+/// Structure to specify which columns and types to check
+#[derive(Deserialize, Clone)]
+pub struct ColumnCheck {
+    pub column_index: usize,
+    pub var_type: VariableType,
+}
+
+/// Input structure for CSV verification (multiple columns)
 #[derive(Deserialize)]
 pub struct VerifyCsvRequest {
     pub uuid: String,
-    pub var_type: VariableType,
-    pub column_index: usize,
+    pub columns: Vec<ColumnCheck>,
 }
 
 /// POST endpoint to start CSV verification
@@ -52,32 +59,40 @@ async fn schedule_verify_job(
     Ok(job_id)
 }
 
-/// Processes a chunk and returns the first invalid row index, if any
+/// Validates all specified columns in a row
+fn validate_row(columns: &[ColumnCheck], record: &csv::StringRecord) -> Option<usize> {
+    for col in columns {
+        if col.column_index >= record.len()
+            || !validate_value(&col.var_type, &record[col.column_index])
+        {
+            return Some(col.column_index);
+        }
+    }
+    None
+}
+
+/// Processes a chunk and returns the first invalid row and column index, if any
 fn find_first_invalid_in_chunk(
     chunk: &[(usize, String)],
-    column_index: usize,
-    var_type: &VariableType,
-) -> Option<usize> {
+    columns: &[ColumnCheck],
+) -> Option<(usize, usize)> {
     chunk.par_iter().find_map_any(|(idx, line)| {
         let record = csv::StringRecord::from(line.split(';').collect::<Vec<_>>());
-        if column_index >= record.len() || !validate_value(var_type, &record[column_index]) {
-            Some(idx + 1)
+        if let Some(invalid_col) = validate_row(columns, &record) {
+            Some((idx + 1, invalid_col))
         } else {
             None
         }
     })
 }
 
-use std::time::Instant;
-
-/// Verifies the CSV file data and fails at the first invalid line.
+/// Verifies the CSV file data and fails at the first invalid line and column.
 /// Measures and prints the execution time.
 async fn verify_csv_data(
     tx: mpsc::Sender<JobUpdate>,
     job_id: String,
     req: VerifyCsvRequest,
 ) -> Result<(), String> {
-    // Start timer
     let start = Instant::now();
 
     let file_path = format!("./{}.csv", req.uuid);
@@ -92,22 +107,16 @@ async fn verify_csv_data(
     let mut chunk = Vec::with_capacity(chunk_size);
     let mut lines_processed = 0usize;
 
-    // Process file in chunks
     for (i, line) in reader.lines().enumerate() {
         let line = line.map_err(|e| e.to_string())?;
         chunk.push((i, line));
         if chunk.len() == chunk_size {
-            // Validate chunk
-            if let Some(invalid_row_number) =
-                find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
-            {
-                handle_invalid_row(&tx, &job_id, invalid_row_number, start).await?;
+            if process_chunk_and_handle_invalid(&chunk, &req.columns, &tx, &job_id, start).await? {
                 return Ok(());
             }
             lines_processed += chunk.len();
             chunk.clear();
 
-            // Send progress update
             tx.send(JobUpdate {
                 job_id: job_id.clone(),
                 status: JobStatus::InProgress(lines_processed as u32),
@@ -117,17 +126,12 @@ async fn verify_csv_data(
         }
     }
 
-    // Check last chunk
     if !chunk.is_empty() {
-        if let Some(invalid_row_number) =
-            find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
-        {
-            handle_invalid_row(&tx, &job_id, invalid_row_number, start).await?;
+        if process_chunk_and_handle_invalid(&chunk, &req.columns, &tx, &job_id, start).await? {
             return Ok(());
         }
     }
 
-    // Send completion update
     tx.send(JobUpdate {
         job_id: job_id.clone(),
         status: JobStatus::Completed("Verification successful".to_string()),
@@ -151,28 +155,40 @@ fn validate_value(var_type: &VariableType, value: &str) -> bool {
     }
 }
 
-async fn report_first_invalid_row(
+/// Reports the first invalid row and column
+async fn handle_invalid_row(
     tx: &mpsc::Sender<JobUpdate>,
     job_id: &str,
     invalid_row_number: usize,
+    invalid_col: usize,
+    start: Instant,
 ) -> Result<(), String> {
-    let msg = format!("First invalid row at: {}", invalid_row_number);
+    let msg = format!(
+        "First invalid row at: row {}, column {}",
+        invalid_row_number, invalid_col
+    );
     tx.send(JobUpdate {
         job_id: job_id.to_string(),
         status: JobStatus::Failed(msg),
     })
         .await
-        .map_err(|e| e.to_string())
-}
-
-async fn handle_invalid_row(
-    tx: &mpsc::Sender<JobUpdate>,
-    job_id: &str,
-    invalid_row_number: usize,
-    start: Instant,
-) -> Result<(), String> {
-    report_first_invalid_row(tx, job_id, invalid_row_number).await?;
+        .map_err(|e| e.to_string())?;
     let duration = start.elapsed();
     println!("verify_csv_data finished in: {:.2?}", duration);
     Ok(())
+}
+
+/// Processes a chunk and handles the first invalid row if found
+async fn process_chunk_and_handle_invalid(
+    chunk: &[(usize, String)],
+    columns: &[ColumnCheck],
+    tx: &mpsc::Sender<JobUpdate>,
+    job_id: &str,
+    start: Instant,
+) -> Result<bool, String> {
+    if let Some((invalid_row_number, invalid_col)) = find_first_invalid_in_chunk(chunk, columns) {
+        handle_invalid_row(tx, job_id, invalid_row_number, invalid_col, start).await?;
+        return Ok(true);
+    }
+    Ok(false)
 }
