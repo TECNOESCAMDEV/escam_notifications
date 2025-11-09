@@ -68,12 +68,18 @@ fn find_first_invalid_in_chunk(
     })
 }
 
-/// Verifies the CSV file data and fails at the first invalid line
+use std::time::Instant;
+
+/// Verifies the CSV file data and fails at the first invalid line.
+/// Measures and prints the execution time.
 async fn verify_csv_data(
     tx: mpsc::Sender<JobUpdate>,
     job_id: String,
     req: VerifyCsvRequest,
 ) -> Result<(), String> {
+    // Start timer
+    let start = Instant::now();
+
     let file_path = format!("./{}.csv", req.uuid);
     if !Path::new(&file_path).exists() {
         return Err("CSV file not found".to_string());
@@ -82,23 +88,28 @@ async fn verify_csv_data(
     let file = File::open(&file_path).map_err(|e| e.to_string())?;
     let reader = BufReader::new(file);
 
-    let chunk_size = 10_000;
+    let chunk_size = 250_000;
     let mut chunk = Vec::with_capacity(chunk_size);
     let mut lines_processed = 0usize;
 
+    // Process file in chunks
     for (i, line) in reader.lines().enumerate() {
         let line = line.map_err(|e| e.to_string())?;
         chunk.push((i, line));
         if chunk.len() == chunk_size {
+            // Validate chunk
             if let Some(invalid_row_number) =
                 find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
             {
                 report_first_invalid_row(&tx, &job_id, invalid_row_number).await?;
+                let duration = start.elapsed();
+                println!("verify_csv_data finished in: {:.2?}", duration);
                 return Ok(());
             }
             lines_processed += chunk.len();
             chunk.clear();
 
+            // Send progress update
             tx.send(JobUpdate {
                 job_id: job_id.clone(),
                 status: JobStatus::InProgress(lines_processed as u32),
@@ -114,16 +125,23 @@ async fn verify_csv_data(
             find_first_invalid_in_chunk(&chunk, req.column_index, &req.var_type)
         {
             report_first_invalid_row(&tx, &job_id, invalid_row_number).await?;
+            let duration = start.elapsed();
+            println!("verify_csv_data finished in: {:.2?}", duration);
             return Ok(());
         }
     }
 
+    // Send completion update
     tx.send(JobUpdate {
         job_id: job_id.clone(),
         status: JobStatus::Completed("Verification successful".to_string()),
     })
         .await
         .map_err(|e| e.to_string())?;
+
+    let duration = start.elapsed();
+    println!("verify_csv_data finished in: {:.2?}", duration);
+
     Ok(())
 }
 
