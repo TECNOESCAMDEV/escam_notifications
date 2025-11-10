@@ -16,13 +16,42 @@ use std::str;
 
 type DynError = Box<dyn std::error::Error>;
 
-/// Decide delimiter from header line. Prefer ';' if present, otherwise ','.
+/// Detects the most likely delimiter in a CSV header line.
+///
+/// Supported delimiters: comma (`,`), semicolon (`;`), tab (`\t`), and pipe (`|`).
+/// The function counts the occurrences of each delimiter in the header line
+/// and returns the one with the highest frequency. If no delimiter is found,
+/// it defaults to comma (`,`).
+///
+/// # Arguments
+///
+/// * `header_line` - The header line of the CSV file as a string slice.
+///
+/// # Returns
+///
+/// * `char` - The detected delimiter character.
+///
+/// # Example
+///
+/// ```
+/// let header = "name;age;email";
+/// let delim = detect_delimiter(header);
+/// assert_eq!(delim, ';');
+/// ```
 fn detect_delimiter(header_line: &str) -> char {
-    if header_line.contains(';') {
-        ';'
-    } else {
-        ','
+    let delimiters = [',', ';', '\t', '|'];
+    let mut max_count = 0;
+    let mut detected = ',';
+
+    for &delim in &delimiters {
+        let count = header_line.matches(delim).count();
+        if count > max_count {
+            max_count = count;
+            detected = delim;
+        }
     }
+
+    detected
 }
 
 /// Trim surrounding quotes and spaces from a CSV cell.
