@@ -194,74 +194,45 @@ fn infer_placeholders_from_file(
     titles: &[String],
     delimiter: char,
 ) -> Result<Vec<PlaceHolder>, DynError> {
-    const MAX_SAMPLE_LINES: usize = 1000;
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
+    let mut header = String::new();
 
-    let cols_count = titles.len();
-    let mut is_number = vec![true; cols_count];
-    let mut is_currency = vec![false; cols_count];
-    let mut is_email = vec![false; cols_count];
-    let currency_symbols = ['$', '€', '£', '¥'];
+    // Read and skip the header line
+    reader.read_line(&mut header)?;
 
-    let mut sampled = 0usize;
-    for (i, line_res) in reader.lines().enumerate() {
-        let line = line_res?;
-        if i == 0 {
-            // skip header
-            continue;
-        }
-        if sampled >= MAX_SAMPLE_LINES {
-            break;
-        }
-        sampled += 1;
-
-        let cells: Vec<String> = line.split(delimiter).map(|c| normalize_cell(c)).collect();
-
-        for col_idx in 0..cols_count {
-            if col_idx >= cells.len() {
-                is_number[col_idx] = false;
-                continue;
-            }
-            let val = cells[col_idx].trim();
-            if val.is_empty() {
-                continue;
-            }
-            if val.contains('@') && val.contains('.') {
-                is_email[col_idx] = true;
-            }
-            if val.chars().any(|ch| currency_symbols.contains(&ch)) {
-                is_currency[col_idx] = true;
-            }
-            if is_number[col_idx] {
-                if val.parse::<f64>().is_err() {
-                    let cleaned: String = val
-                        .chars()
-                        .filter(|c| c.is_digit(10) || *c == '.' || *c == '-' || *c == ',')
-                        .collect();
-                    let cleaned = cleaned.replace(',', "");
-                    if cleaned.is_empty() || cleaned.parse::<f64>().is_err() {
-                        is_number[col_idx] = false;
-                    }
-                }
-            }
-        }
+    // Read the first data line for sampling
+    let mut data_line = String::new();
+    if reader.read_line(&mut data_line)? == 0 {
+        return Err("CSV file has no data rows".into());
     }
 
-    let mut placeholders = Vec::with_capacity(cols_count);
-    for idx in 0..cols_count {
-        let ptype = if is_email[idx] {
-            PlaceholderType::Email
-        } else if is_currency[idx] {
-            PlaceholderType::Currency
-        } else if is_number[idx] {
-            PlaceholderType::Number
+    let cells: Vec<String> = data_line
+        .split(delimiter)
+        .map(|c| normalize_cell(c))
+        .collect();
+
+    let currency_symbols = ['$', '€', '£', '¥'];
+    let mut placeholders = Vec::with_capacity(titles.len());
+
+    for (idx, title) in titles.iter().enumerate() {
+        let placeholder_type = if idx < cells.len() {
+            let val = cells[idx].trim();
+            if val.contains('@') && val.contains('.') {
+                PlaceholderType::Email
+            } else if val.chars().any(|ch| currency_symbols.contains(&ch)) {
+                PlaceholderType::Currency
+            } else if val.parse::<f64>().is_ok() {
+                PlaceholderType::Number
+            } else {
+                PlaceholderType::Text
+            }
         } else {
             PlaceholderType::Text
         };
         placeholders.push(PlaceHolder {
-            title: titles[idx].clone(),
-            placeholder_type: ptype,
+            title: title.clone(),
+            placeholder_type,
         });
     }
     Ok(placeholders)
