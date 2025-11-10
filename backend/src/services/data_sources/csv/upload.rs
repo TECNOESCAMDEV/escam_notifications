@@ -37,7 +37,7 @@ pub async fn upload_data_source(mut payload: Multipart) -> Result<(), Box<dyn st
                     return Err("The file must end with .csv".into());
                 }
                 if let Some(ref ds) = data_source {
-                    let file = File::create(format!("{}.csv", ds.id))?;
+                    let file = File::create(format!("{}.csv", ds.template_id))?;
                     let mut writer = BufWriter::new(file);
                     while let Some(chunk) = field.next().await {
                         let chunk = chunk?;
