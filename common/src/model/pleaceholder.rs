@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaceHolder {
-    pub id: String,
-    pub var_type: PlaceholderType,
+    pub title: String,
+    pub placeholder_type: PlaceholderType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
