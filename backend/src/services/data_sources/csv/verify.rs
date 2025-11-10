@@ -4,6 +4,7 @@ use common::model::pleaceholder::PlaceholderType;
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::{
+    collections::HashMap,
     fs::File,
     io::{BufRead, BufReader},
     path::Path,
@@ -13,8 +14,8 @@ use tokio::sync::mpsc;
 
 #[derive(Deserialize, Clone)]
 pub struct ColumnCheck {
-    pub column_index: usize,
-    pub var_type: PlaceholderType,
+    pub title: String,
+    pub placeholder_type: PlaceholderType,
 }
 
 #[derive(Deserialize)]
@@ -69,14 +70,20 @@ fn validate_value(var_type: &PlaceholderType, value: &str) -> bool {
 fn find_first_invalid(
     chunk: &[(usize, String)],
     columns: &[ColumnCheck],
-) -> Option<(usize, usize)> {
+    title_to_index: &HashMap<String, usize>,
+    delimiter: char,
+) -> Option<(usize, String)> {
     chunk.par_iter().find_map_any(|(idx, line)| {
-        let record: Vec<_> = line.split(';').collect();
+        let record: Vec<_> = line.split(delimiter).collect();
         for col in columns {
-            if col.column_index >= record.len()
-                || !validate_value(&col.var_type, record[col.column_index])
-            {
-                return Some((idx + 1, col.column_index));
+            if let Some(&col_idx) = title_to_index.get(&col.title) {
+                if col_idx >= record.len()
+                    || !validate_value(&col.placeholder_type, record[col_idx])
+                {
+                    return Some((idx + 2, col.title.clone())); // +2 porque idx empieza en 0 y saltamos header
+                }
+            } else {
+                return Some((idx + 2, col.title.clone())); // título no encontrado
             }
         }
         None
@@ -94,7 +101,26 @@ async fn verify_csv_data(
         return Err("CSV file not found".to_string());
     }
     let file = File::open(&file_path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
+
+    // Detect delimiter from header
+    let mut header_line = String::new();
+    reader
+        .read_line(&mut header_line)
+        .map_err(|e| e.to_string())?;
+    let header_line = header_line.trim_end_matches(&['\n', '\r'][..]);
+    let delimiter = [',', ';', '\t', '|']
+        .iter()
+        .max_by_key(|&&d| header_line.matches(d).count())
+        .copied()
+        .unwrap_or(',');
+
+    let titles: Vec<&str> = header_line.split(delimiter).collect();
+    let mut title_to_index = HashMap::new();
+    for (i, t) in titles.iter().enumerate() {
+        title_to_index.insert(t.trim().to_string(), i);
+    }
+
     let chunk_size = 250_000;
     let mut chunk = Vec::with_capacity(chunk_size);
     let mut lines_processed = 0usize;
@@ -103,7 +129,17 @@ async fn verify_csv_data(
         let line = line.map_err(|e| e.to_string())?;
         chunk.push((i, line));
         if chunk.len() == chunk_size {
-            if process_chunk(&tx, &job_id, &chunk, &req.columns, start).await? {
+            if process_chunk(
+                &tx,
+                &job_id,
+                &chunk,
+                &req.columns,
+                &title_to_index,
+                delimiter,
+                start,
+            )
+                .await?
+            {
                 return Ok(());
             }
             lines_processed += chunk.len();
@@ -117,7 +153,17 @@ async fn verify_csv_data(
         }
     }
     if !chunk.is_empty() {
-        if process_chunk(&tx, &job_id, &chunk, &req.columns, start).await? {
+        if process_chunk(
+            &tx,
+            &job_id,
+            &chunk,
+            &req.columns,
+            &title_to_index,
+            delimiter,
+            start,
+        )
+            .await?
+        {
             return Ok(());
         }
     }
@@ -136,10 +182,12 @@ async fn process_chunk(
     job_id: &str,
     chunk: &[(usize, String)],
     columns: &[ColumnCheck],
+    title_to_index: &HashMap<String, usize>,
+    delimiter: char,
     start: Instant,
 ) -> Result<bool, String> {
-    if let Some((row, col)) = find_first_invalid(chunk, columns) {
-        handle_first_invalid(tx, job_id, row, col, start).await?;
+    if let Some((row, title)) = find_first_invalid(chunk, columns, title_to_index, delimiter) {
+        handle_first_invalid(tx, job_id, row, &title, start).await?;
         return Ok(true);
     }
     Ok(false)
@@ -149,12 +197,15 @@ async fn handle_first_invalid(
     tx: &mpsc::Sender<JobUpdate>,
     job_id: &str,
     row: usize,
-    col: usize,
+    title: &str,
     start: Instant,
 ) -> Result<(), String> {
     tx.send(JobUpdate {
         job_id: job_id.to_string(),
-        status: JobStatus::Failed(format!("First invalid row at: row {}, column {}", row, col)),
+        status: JobStatus::Failed(format!(
+            "First invalid row at: row {}, column '{}'",
+            row, title
+        )),
     })
         .await
         .map_err(|e| e.to_string())?;
