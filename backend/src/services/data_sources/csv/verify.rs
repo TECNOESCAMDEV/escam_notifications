@@ -1,6 +1,6 @@
 use crate::job_controller::state::{JobStatus, JobUpdate, JobsState};
 use actix_web::{web, HttpResponse, Responder};
-use common::model::variable::VariableType;
+use common::model::pleaceholder::PlaceholderType;
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::{
@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 #[derive(Deserialize, Clone)]
 pub struct ColumnCheck {
     pub column_index: usize,
-    pub var_type: VariableType,
+    pub var_type: PlaceholderType,
 }
 
 #[derive(Deserialize)]
@@ -58,11 +58,11 @@ async fn schedule_verify_job(
     Ok(job_id)
 }
 
-fn validate_value(var_type: &VariableType, value: &str) -> bool {
+fn validate_value(var_type: &PlaceholderType, value: &str) -> bool {
     match var_type {
-        VariableType::Text => true,
-        VariableType::Number | VariableType::Currency => value.parse::<f64>().is_ok(),
-        VariableType::Email => value.contains('@') && value.contains('.'),
+        PlaceholderType::Text => true,
+        PlaceholderType::Number | PlaceholderType::Currency => value.parse::<f64>().is_ok(),
+        PlaceholderType::Email => value.contains('@') && value.contains('.'),
     }
 }
 
