@@ -3,18 +3,21 @@ use actix_web::{HttpResponse, Responder};
 use common::model::datasource::DataSource;
 use futures_util::StreamExt;
 use md5::Context;
+use rusqlite::{params, Connection};
 use serde_json::from_slice;
 use std::fs::File;
 use std::io::Write;
 
 pub async fn process(payload: Multipart) -> impl Responder {
     match upload_data_source(payload).await {
-        Ok(_) => HttpResponse::Ok().body("File uploaded successfully"),
+        Ok(result) => HttpResponse::Ok().body(result.to_string()),
         Err(e) => HttpResponse::BadRequest().body(format!("Error: {}", e)),
     }
 }
 
-pub async fn upload_data_source(mut payload: Multipart) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn upload_data_source(
+    mut payload: Multipart,
+) -> Result<bool, Box<dyn std::error::Error>> {
     use std::io::BufWriter;
 
     let mut data_source: Option<DataSource> = None;
@@ -66,14 +69,34 @@ pub async fn upload_data_source(mut payload: Multipart) -> Result<(), Box<dyn st
         return Err("Missing file".into());
     }
 
+    // Compute MD5 hex string
     let computed_md5 = format!("{:x}", md5_hasher.finalize());
-    if ds.csv_md5 != computed_md5 {
-        return Err(format!(
-            "MD5 mismatch: expected {}, got {}",
-            ds.csv_md5, computed_md5
-        )
-            .into());
-    }
 
-    Ok(())
+    // Open SQLite and look up template by id
+    let conn = Connection::open("templify.sqlite")?;
+    let db_md5_result: Result<String, rusqlite::Error> = conn.query_row(
+        "SELECT datasource_md5 FROM templates WHERE id = ?1",
+        params![ds.template_id],
+        |row| row.get(0),
+    );
+
+    let db_md5 = match db_md5_result {
+        Ok(val) => val,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return Err("Template not found".into());
+        }
+        Err(e) => return Err(Box::new(e)),
+    };
+
+    if db_md5 == computed_md5 {
+        // Match -> return true (no update needed)
+        Ok(true)
+    } else {
+        // Mismatch -> update DB with new md5 and return false
+        conn.execute(
+            "UPDATE templates SET datasource_md5 = ?1 WHERE id = ?2",
+            params![computed_md5, ds.template_id],
+        )?;
+        Ok(false)
+    }
 }
