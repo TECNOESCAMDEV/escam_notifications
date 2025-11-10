@@ -2,6 +2,7 @@ use actix_multipart::Multipart;
 use actix_web::{HttpResponse, Responder};
 use common::model::datasource::DataSource;
 use futures_util::StreamExt;
+use md5::Context;
 use serde_json::from_slice;
 use std::fs::File;
 use std::io::Write;
@@ -17,7 +18,8 @@ pub async fn upload_data_source(mut payload: Multipart) -> Result<(), Box<dyn st
     use std::io::BufWriter;
 
     let mut data_source: Option<DataSource> = None;
-    let mut file_writer: Option<BufWriter<File>> = None;
+    let mut md5_hasher = Context::new();
+    let mut file_written = false;
 
     while let Some(item) = payload.next().await {
         let mut field = item?;
@@ -38,9 +40,11 @@ pub async fn upload_data_source(mut payload: Multipart) -> Result<(), Box<dyn st
                     let file = File::create(format!("{}.csv", ds.id))?;
                     let mut writer = BufWriter::new(file);
                     while let Some(chunk) = field.next().await {
-                        writer.write_all(&chunk?)?;
+                        let chunk = chunk?;
+                        md5_hasher.consume(&chunk);
+                        writer.write_all(&chunk)?;
                     }
-                    file_writer = Some(writer);
+                    file_written = true;
                 } else {
                     return Err("DataSource JSON must be sent before the file".into());
                 }
@@ -57,8 +61,18 @@ pub async fn upload_data_source(mut payload: Multipart) -> Result<(), Box<dyn st
         }
     }
 
-    if data_source.is_none() || file_writer.is_none() {
-        return Err("Missing DataSource or file".into());
+    let ds = data_source.ok_or("Missing DataSource")?;
+    if !file_written {
+        return Err("Missing file".into());
+    }
+
+    let computed_md5 = format!("{:x}", md5_hasher.finalize());
+    if ds.csv_md5 != computed_md5 {
+        return Err(format!(
+            "MD5 mismatch: expected {}, got {}",
+            ds.csv_md5, computed_md5
+        )
+            .into());
     }
 
     Ok(())
