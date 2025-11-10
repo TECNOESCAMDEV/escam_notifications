@@ -79,7 +79,7 @@ impl Component for StaticTextComponent {
     }
 }
 
-fn create_new_template(link: yew::html::Scope<StaticTextComponent>) {
+fn create_new_template(link: html::Scope<StaticTextComponent>) {
     link.send_message_batch(vec![
         Msg::SetTemplate(Some(create_empty_template())),
         Msg::UpdateText(String::new()),
