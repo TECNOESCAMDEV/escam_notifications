@@ -10,6 +10,12 @@ use std::io::{BufWriter, Write};
 
 type DynError = Box<dyn std::error::Error>;
 
+/// HTTP handler for the CSV upload endpoint.
+///
+/// Accepts a multipart/form-data payload and delegates processing to
+/// `upload_data_source`. Returns:
+/// - `HttpResponse::Ok` on success.
+/// - `HttpResponse::BadRequest` with an error message on failure.
 pub async fn process(payload: Multipart) -> impl Responder {
     match upload_data_source(payload).await {
         Ok(_) => HttpResponse::Ok().finish(),
@@ -17,6 +23,25 @@ pub async fn process(payload: Multipart) -> impl Responder {
     }
 }
 
+/// Parse a multipart upload, persist the uploaded CSV and update template metadata.
+///
+/// Behavior:
+/// - Expects two multipart fields:
+///   - `json`: JSON-serialized `DataSource` containing `template_id`.
+///   - `file`: the CSV file bytes to be stored.
+/// - Streams file bytes to a temporary file while computing an MD5 checksum.
+/// - If the template was previously verified (`verified == 1`), updates
+///   `last_verified_md5` with the current `datasource_md5` before overwriting.
+/// - Moves the temp file to `template_id\_{md5}.csv` (final filename).
+/// - Updates the `templates` table setting `datasource_md5 = computed_md5` and `verified = 0`.
+///
+/// Errors:
+/// - Returns an error if `json` or `file` part is missing.
+/// - Propagates filesystem and DB errors.
+///
+/// Returns:
+/// - `Ok(())` on success.
+/// - `Err(DynError)` on failure.
 pub async fn upload_data_source(mut payload: Multipart) -> Result<(), DynError> {
     let mut data_source: Option<DataSource> = None;
     let mut file_received = false;
