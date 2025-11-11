@@ -1,10 +1,10 @@
-// rust
 use crate::job_controller::state::{JobStatus, JobUpdate, JobsState};
 use actix_web::{web, HttpResponse, Responder};
 use common::model::pleaceholder::PlaceholderType;
 use rayon::prelude::*;
 use rusqlite::{params, Connection};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use std::{
     collections::HashMap,
     fs::File,
@@ -14,7 +14,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct ColumnCheck {
     pub title: String,
     pub placeholder_type: PlaceholderType,
@@ -201,13 +201,12 @@ fn detect_delimiter(header_line: &str) -> char {
 }
 
 /// Main blocking verification function executed inside spawn_blocking.
-/// It opens DB, loads template, infers columns from the second line of the CSV file,
-/// processes the file in chunks, sends job updates via `tx`, and updates the database.
+/// Returns Ok(json_columns) on success where json_columns is a JSON array of ColumnCheck.
 fn verify_csv_data_blocking(
     tx: mpsc::Sender<JobUpdate>,
     job_id: String,
     template_id: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let start = Instant::now();
 
     // Open DB and fetch template row
@@ -284,7 +283,7 @@ fn verify_csv_data_blocking(
                     &last_verified_md5,
                     false,
                 )?;
-                return Ok(());
+                return Err("Verification failed: invalid row found".to_string());
             }
             lines_processed += chunk.len();
             chunk.clear();
@@ -306,18 +305,24 @@ fn verify_csv_data_blocking(
             start,
         )? {
             update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, false)?;
-            return Ok(());
+            return Err("Verification failed: invalid row found".to_string());
         }
     }
 
-    // Success: send completed and update db
+    // If we reach here: verification successful
+    // Update DB: set verified and last_verified_md5
+    update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, true)?;
+
+    // Serialize inferred columns to JSON to return and to send in JobUpdate
+    let json_columns = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
+
     let _ = tx.blocking_send(JobUpdate {
         job_id: job_id.clone(),
-        status: JobStatus::Completed("Verification successful".to_string()),
+        status: JobStatus::Completed(json_columns.clone()),
     });
-    update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, true)?;
+
     println!("verify_csv_data finished in: {:.2?}", start.elapsed());
-    Ok(())
+    Ok(json_columns)
 }
 
 pub(crate) async fn process(
@@ -356,11 +361,11 @@ async fn schedule_verify_job(
         });
 
         match handle.await {
-            Ok(Ok(())) => {
+            Ok(Ok(json_columns)) => {
                 js.jobs
                     .write()
                     .await
-                    .insert(value, JobStatus::Completed("Done".to_string()));
+                    .insert(value, JobStatus::Completed(json_columns));
             }
             Ok(Err(e)) => {
                 js.jobs.write().await.insert(value, JobStatus::Failed(e));
