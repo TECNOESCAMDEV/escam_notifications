@@ -358,7 +358,7 @@ fn verify_csv_data_blocking(
 
     // If template is already verified but md5s differ (or verified flag non-zero), keep original protection
     if verified != 0 {
-        return Err("Template already verified".to_string());
+        return Err("Template already verified but datasource has changed".to_string());
     }
 
     // Build file path and open file
