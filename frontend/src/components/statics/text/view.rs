@@ -47,7 +47,7 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
                 {icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false)}
                 {icon_button("save", "Guardar", link.callback(|_| Msg::Save), false)}
                 <div>
-                    <CsvDataSourceComponent />
+                    <CsvDataSourceComponent template_id={component.template.as_ref().and_then(|t| Some(t.id.clone()))} />
                 </div>
             </div>
 

@@ -1,10 +1,16 @@
-use yew::{html, Component, Context, Html};
+use yew::{html, Component, Context, Html, Properties};
 
 pub struct CsvDataSourceComponent;
 
+#[derive(Properties, PartialEq)]
+pub struct CsvDataSourceProps {
+    #[prop_or_default]
+    pub template_id: Option<String>,
+}
+
 impl Component for CsvDataSourceComponent {
     type Message = ();
-    type Properties = ();
+    type Properties = CsvDataSourceProps;
 
     fn create(_ctx: &Context<Self>) -> Self {
         CsvDataSourceComponent
