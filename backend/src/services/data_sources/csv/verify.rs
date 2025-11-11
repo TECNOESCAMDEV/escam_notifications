@@ -294,7 +294,18 @@ fn verify_csv_data_blocking(
     let delimiter = detect_delimiter(&header_line);
 
     // Validate and normalize titles from header (ensures uniqueness and textual titles)
-    let titles = validate_and_normalize_titles(&header_line, delimiter)?;
+    // If validation fails, revert datasource_md5 via update_template_verification(..., false)
+    let titles = match validate_and_normalize_titles(&header_line, delimiter) {
+        Ok(t) => t,
+        Err(e) => {
+            // attempt revert; if revert fails, return combined error
+            update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, false)
+                .map_err(|db_err| {
+                    format!("Header validation failed: {}; revert failed: {}", e, db_err)
+                })?;
+            return Err(format!("Header validation failed: {}", e));
+        }
+    };
 
     let mut title_to_index = HashMap::new();
     for (i, t) in titles.iter().enumerate() {
