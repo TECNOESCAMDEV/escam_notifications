@@ -1,4 +1,3 @@
-// Rust
 use actix_multipart::Multipart;
 use actix_web::{HttpResponse, Responder};
 use common::model::datasource::DataSource;
