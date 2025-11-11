@@ -356,9 +356,16 @@ fn verify_csv_data_blocking(
         return Ok(json_columns);
     }
 
-    // If template is already verified but md5s differ (or verified flag non-zero), keep original protection
+    // If template has verified flag set (possible bug / partial verification), reset it to 0 and continue.
+    // This makes the system treat it as unverified and proceed with a full verification.
     if verified != 0 {
-        return Err("Template already verified but datasource has changed".to_string());
+        conn
+            .execute("UPDATE templates SET verified = 0 WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to reset verified flag: {}", e))?;
+        println!(
+            "Template '{}' had verified != 0; reset verified = 0 and continuing verification",
+            id
+        );
     }
 
     // Build file path and open file
