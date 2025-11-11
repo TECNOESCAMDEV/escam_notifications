@@ -15,17 +15,22 @@ use std::{
 use tokio::sync::mpsc;
 
 #[derive(Deserialize, Serialize, Clone)]
+/// Represents a column validation rule with a normalized title and inferred placeholder type.
 pub struct ColumnCheck {
     pub title: String,
     pub placeholder_type: PlaceholderType,
 }
 
 #[derive(Deserialize)]
+/// Request payload for the CSV verification endpoint.
+/// Contains the template identifier (uuid) to verify.
 pub struct VerifyCsvRequest {
     pub uuid: String,
 }
 
-/// Validate a single cell value against a placeholder type.
+/// Validate a single cell value against a `PlaceholderType`.
+///
+/// Returns `true` if the `value` conforms to the provided `var_type` heuristic, `false` otherwise.
 fn validate_value(var_type: &PlaceholderType, value: &str) -> bool {
     match var_type {
         PlaceholderType::Text => true,
@@ -34,8 +39,10 @@ fn validate_value(var_type: &PlaceholderType, value: &str) -> bool {
     }
 }
 
-/// Find the first invalid row inside a chunk using parallel iteration.
-/// Returns Some((row_index, column_title)) when invalid found.
+/// Search a chunk of lines for the first invalid row using parallel iteration.
+///
+/// Returns `Some((row_index, column_title))` if an invalid cell is found.
+/// `row_index` is the 1-based CSV row index including header (+2 offset used elsewhere).
 fn find_first_invalid(
     chunk: &[(usize, String)],
     columns: &[ColumnCheck],
@@ -59,7 +66,10 @@ fn find_first_invalid(
     })
 }
 
-/// Trim and normalize a CSV cell (remove outer quotes and NBSP).
+/// Trim and normalize a CSV cell.
+///
+/// Removes outer single or double quotes if present, replaces NBSP with a space,
+/// and trims surrounding whitespace. Returns the normalized string.
 fn normalize_cell(cell: &str) -> String {
     let s = cell.trim();
     let s = s
@@ -71,9 +81,15 @@ fn normalize_cell(cell: &str) -> String {
     s.replace('\u{00A0}', " ").trim().to_string()
 }
 
-/// Validate header titles, ensure uniqueness and that titles are textual (not purely numeric),
-/// and normalize titles by replacing whitespace runs with '_'.
-/// Returns vector of normalized titles or Err with a message.
+/// Validate header titles and normalize them.
+///
+/// Behavior:
+/// - Splits `header_line` by `delimiter` and normalizes each title via `normalize_cell`.
+/// - Ensures no empty titles and that titles are not purely numeric.
+/// - Collapses any runs of whitespace into a single underscore (`_`) to produce normalized titles.
+/// - Ensures normalized titles are unique.
+///
+/// Returns a `Vec<String>` with normalized titles on success, or `Err(String)` with an error message.
 fn validate_and_normalize_titles(
     header_line: &str,
     delimiter: char,
@@ -120,9 +136,15 @@ fn validate_and_normalize_titles(
     Ok(normalized)
 }
 
-/// Infer placeholder types from a sample data line and titles.
-/// Uses heuristics: email if contains '@' and '.', currency if contains currency symbols,
-/// number if parseable as f64, otherwise text.
+/// Infer placeholder types for each column using the sample `second_line`.
+///
+/// Heuristics:
+/// - Email if the value contains `@` and `.`
+/// - Currency if it contains common currency symbols
+/// - Number if parsable as `f64`
+/// - Otherwise `Text`
+///
+/// Returns a vector of `ColumnCheck` aligned with `titles`.
 fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) -> Vec<ColumnCheck> {
     let cells: Vec<String> = second_line
         .split(delimiter)
@@ -157,9 +179,13 @@ fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) ->
     columns
 }
 
-/// Update templates table after verification attempt.
-/// If success is true: set verified=1 and last_verified_md5 = datasource_md5.
-/// If success is false: set verified=1 and overwrite datasource_md5 with last_verified_md5.
+/// Update the `templates` table after a verification attempt.
+///
+/// Behavior:
+/// - If `success` is `true`: set `verified = 1` and `last_verified_md5 = datasource_md5`.
+/// - If `success` is `false`: set `verified = 1` and restore `datasource_md5 = last_verified_md5`.
+///
+/// Returns `Ok(())` on success or `Err(String)` with the DB error message.
 fn update_template_verification(
     conn: &Connection,
     id: &str,
@@ -183,7 +209,10 @@ fn update_template_verification(
     Ok(())
 }
 
-/// Send a failure job update with the first invalid row details.
+/// Send a `JobUpdate::Failed` with the first invalid row details.
+///
+/// This helper formats an informative failure message and sends it over `tx`
+/// using the blocking send API. It also logs timing information.
 fn handle_first_invalid_sync(
     tx: &mpsc::Sender<JobUpdate>,
     job_id: &str,
@@ -202,7 +231,10 @@ fn handle_first_invalid_sync(
     Ok(())
 }
 
-/// Process a single chunk synchronously; returns Ok(true) if an invalid was found and handled.
+/// Process a single chunk synchronously.
+///
+/// Returns `Ok(true)` if an invalid row was found and handled (a `JobUpdate::Failed` has been sent),
+/// or `Ok(false)` if the chunk passed validation. Errors are returned as `Err(String)`.
 fn process_chunk_sync(
     tx: &mpsc::Sender<JobUpdate>,
     job_id: &str,
@@ -219,7 +251,10 @@ fn process_chunk_sync(
     Ok(false)
 }
 
-/// Read header and second line from reader; return trimmed lines.
+/// Read the header line and the first data line from a CSV reader.
+///
+/// Returns a tuple `(header_line, second_line)` with trailing newlines removed,
+/// or `Err(String)` if reading fails or no data rows are present.
 fn read_header_and_second_line(reader: &mut BufReader<File>) -> Result<(String, String), String> {
     let mut header_line = String::new();
     reader
@@ -240,7 +275,9 @@ fn read_header_and_second_line(reader: &mut BufReader<File>) -> Result<(String, 
     Ok((header_line, second_line))
 }
 
-/// Detect delimiter by choosing the character with the most occurrences in the header.
+/// Detect the CSV delimiter by selecting the character with the most occurrences in the header.
+///
+/// Candidate delimiters: comma, semicolon, tab, pipe. Defaults to comma if none found.
 fn detect_delimiter(header_line: &str) -> char {
     [',', ';', '\t', '|']
         .iter()
@@ -249,8 +286,19 @@ fn detect_delimiter(header_line: &str) -> char {
         .unwrap_or(',')
 }
 
-/// Main blocking verification function executed inside spawn_blocking.
-/// Returns Ok(json_columns) on success where json_columns is a JSON array of ColumnCheck.
+/// Main blocking verification function executed inside `spawn_blocking`.
+///
+/// Workflow summary:
+/// - Load template record from DB and ensure it is not already verified.
+/// - Open corresponding CSV file named `"{id}_{datasource_md5}.csv"`.
+/// - Read header and first data line, detect delimiter.
+/// - Validate and normalize header titles; on failure attempt DB rollback to restore previous MD5.
+/// - Infer column checks from the second line.
+/// - Process remaining lines in chunks, sending progress updates and handling the first invalid row:
+///   if a validation failure occurs, roll back `datasource_md5` and return an error.
+/// - On success set `verified = 1` and update `last_verified_md5`, then return JSON of inferred columns.
+///
+/// Returns `Ok(String)` with JSON-serialized `ColumnCheck` vector on success, or `Err(String)` on failure.
 fn verify_csv_data_blocking(
     tx: mpsc::Sender<JobUpdate>,
     job_id: String,
@@ -378,6 +426,9 @@ fn verify_csv_data_blocking(
     Ok(json_columns)
 }
 
+/// HTTP handler that enqueues a verification job.
+///
+/// Receives a JSON `VerifyCsvRequest`, schedules a background task and returns the generated job id.
 pub(crate) async fn process(
     jobs_state: web::Data<JobsState>,
     req: web::Json<VerifyCsvRequest>,
@@ -388,6 +439,12 @@ pub(crate) async fn process(
     }
 }
 
+/// Schedule a CSV verification job in the background.
+///
+/// Inserts a `Pending` job into `jobs_state`, spawns a task that runs
+/// `verify_csv_data_blocking` in a blocking thread and updates `jobs_state` on completion.
+///
+/// Returns the generated job id on success.
 async fn schedule_verify_job(
     jobs_state: web::Data<JobsState>,
     req: VerifyCsvRequest,
