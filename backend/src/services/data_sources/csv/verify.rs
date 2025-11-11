@@ -324,7 +324,7 @@ fn verify_csv_data_blocking(
         let line = line.map_err(|e| e.to_string())?;
         chunk.push((i, line));
         if chunk.len() == chunk_size {
-            if process_chunk_sync(
+            process_and_handle_chunk(
                 &tx,
                 &job_id,
                 &chunk,
@@ -332,17 +332,11 @@ fn verify_csv_data_blocking(
                 &title_to_index,
                 delimiter,
                 start,
-            )? {
-                // Failure: revert datasource_md5 and mark verified
-                update_template_verification(
-                    &conn,
-                    &id,
-                    &datasource_md5,
-                    &last_verified_md5,
-                    false,
-                )?;
-                return Err("Verification failed: invalid row found".to_string());
-            }
+                &conn,
+                &id,
+                &datasource_md5,
+                &last_verified_md5,
+            )?;
             lines_processed += chunk.len();
             chunk.clear();
             let _ = tx.blocking_send(JobUpdate {
@@ -353,7 +347,7 @@ fn verify_csv_data_blocking(
     }
 
     if !chunk.is_empty() {
-        if process_chunk_sync(
+        process_and_handle_chunk(
             &tx,
             &job_id,
             &chunk,
@@ -361,10 +355,11 @@ fn verify_csv_data_blocking(
             &title_to_index,
             delimiter,
             start,
-        )? {
-            update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, false)?;
-            return Err("Verification failed: invalid row found".to_string());
-        }
+            &conn,
+            &id,
+            &datasource_md5,
+            &last_verified_md5,
+        )?;
     }
 
     // If we reach here: verification successful
@@ -438,4 +433,52 @@ async fn schedule_verify_job(
     });
 
     Ok(job_id)
+}
+
+/// Processes a chunk of CSV lines and performs DB rollback if a validation failure occurs.
+///
+/// Behavior:
+/// - Calls `process_chunk_sync` to search for the first invalid row inside `chunk`.
+/// - If an invalid row is found:
+///   - `process_chunk_sync` will send a `JobUpdate::Failed` via `tx` with row and column details.
+///   - This function will call `update_template_verification(conn, id, datasource_md5, last_verified_md5, false)`
+///     to revert `datasource_md5` and mark the template as verified (rollback).
+///   - Returns `Err(String)` describing the failure (either validation or DB rollback error).
+/// - If no invalid rows are found, returns `Ok(())`.
+///
+/// Parameters:
+/// - `tx`: sender for job updates (`JobUpdate`).
+/// - `job_id`: identifier of the running job (for messages).
+/// - `chunk`: slice of `(line_index, line_text)` to validate.
+/// - `columns`: inferred column specifications (`ColumnCheck`).
+/// - `title_to_index`: map from normalized title to column index.
+/// - `delimiter`: CSV delimiter character.
+/// - `start`: Instant used for logging in called helpers.
+/// - `conn`: database connection used to perform the rollback when needed.
+/// - `id`: template id in `templates` table.
+/// - `datasource_md5`: current datasource MD5 (to be reverted).
+/// - `last_verified_md5`: previously verified MD5 (restored on rollback).
+///
+/// Returns:
+/// - `Ok(())` if the chunk processed without errors.
+/// - `Err(String)` if an invalid row was detected or if the rollback operation failed.
+fn process_and_handle_chunk(
+    tx: &mpsc::Sender<JobUpdate>,
+    job_id: &str,
+    chunk: &[(usize, String)],
+    columns: &[ColumnCheck],
+    title_to_index: &HashMap<String, usize>,
+    delimiter: char,
+    start: Instant,
+    conn: &Connection,
+    id: &str,
+    datasource_md5: &str,
+    last_verified_md5: &str,
+) -> Result<(), String> {
+    if process_chunk_sync(tx, job_id, chunk, columns, title_to_index, delimiter, start)? {
+        // Failure: revert datasource_md5 and mark verified
+        update_template_verification(conn, id, datasource_md5, last_verified_md5, false)?;
+        return Err("Verification failed: invalid row found".to_string());
+    }
+    Ok(())
 }
