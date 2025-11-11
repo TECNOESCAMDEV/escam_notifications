@@ -55,14 +55,50 @@ fn find_first_invalid(
     })
 }
 
-fn infer_column_checks(second_line: &str, delimiter: char) -> Vec<ColumnCheck> {
-    second_line
+fn normalize_cell(cell: &str) -> String {
+    let s = cell.trim();
+    // quitar comillas externas simples o dobles
+    let s = s
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| s.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| s.to_string());
+    s.replace('\u{00A0}', " ").trim().to_string()
+}
+
+fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) -> Vec<ColumnCheck> {
+    let cells: Vec<String> = second_line
         .split(delimiter)
-        .map(|title| ColumnCheck {
-            title: title.trim().to_string(),
-            placeholder_type: PlaceholderType::Text, // ajustar si hay heurística para tipos
-        })
-        .collect()
+        .map(|c| normalize_cell(c))
+        .collect();
+
+    let currency_symbols = ['$', '€', '£', '¥'];
+    let mut columns = Vec::with_capacity(titles.len());
+
+    for (idx, title) in titles.iter().enumerate() {
+        let placeholder_type = if idx < cells.len() {
+            let val = cells[idx].trim();
+            if val.contains('@') && val.contains('.') {
+                PlaceholderType::Email
+            } else if val.chars().any(|ch| currency_symbols.contains(&ch)) {
+                PlaceholderType::Currency
+            } else if val.parse::<f64>().is_ok() {
+                PlaceholderType::Number
+            } else {
+                PlaceholderType::Text
+            }
+        } else {
+            PlaceholderType::Text
+        };
+
+        columns.push(ColumnCheck {
+            title: title.clone(),
+            placeholder_type,
+        });
+    }
+
+    columns
 }
 
 fn update_template_verification(
@@ -177,7 +213,18 @@ fn verify_csv_data_blocking(
         .read_line(&mut second_line)
         .map_err(|e| e.to_string())?;
     let second_line = second_line.trim_end_matches(&['\n', '\r'][..]);
-    let columns = infer_column_checks(second_line, delimiter);
+
+    let titles: Vec<String> = header_line
+        .split(delimiter)
+        .map(|s| s.trim().to_string())
+        .collect();
+
+    let mut title_to_index = HashMap::new();
+    for (i, t) in titles.iter().enumerate() {
+        title_to_index.insert(t.clone(), i);
+    }
+
+    let columns = infer_column_checks(&titles, second_line, delimiter);
 
     let titles: Vec<&str> = header_line.split(delimiter).collect();
     let mut title_to_index = HashMap::new();
