@@ -6,7 +6,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{BufRead, BufReader},
     path::Path,
@@ -69,6 +69,55 @@ fn normalize_cell(cell: &str) -> String {
         .map(|s| s.to_string())
         .unwrap_or_else(|| s.to_string());
     s.replace('\u{00A0}', " ").trim().to_string()
+}
+
+/// Validate header titles, ensure uniqueness and that titles are textual (not purely numeric),
+/// and normalize titles by replacing whitespace runs with '_'.
+/// Returns vector of normalized titles or Err with a message.
+fn validate_and_normalize_titles(
+    header_line: &str,
+    delimiter: char,
+) -> Result<Vec<String>, String> {
+    let raw_titles: Vec<String> = header_line
+        .split(delimiter)
+        .map(|s| normalize_cell(s))
+        .collect();
+
+    if raw_titles.is_empty() {
+        return Err("Header line contains no titles".to_string());
+    }
+
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::with_capacity(raw_titles.len());
+
+    for t in raw_titles {
+        let t_trim = t.trim();
+        if t_trim.is_empty() {
+            return Err("Header contains an empty title".to_string());
+        }
+
+        // Reject purely numeric titles
+        if t_trim.parse::<f64>().is_ok() {
+            return Err(format!(
+                "Header titles must be textual, found numeric title: '{}'",
+                t_trim
+            ));
+        }
+
+        // Normalize spaces: collapse runs of whitespace into a single underscore
+        let norm = t_trim.split_whitespace().collect::<Vec<_>>().join("_");
+
+        if seen.contains(&norm) {
+            return Err(format!(
+                "Duplicate header title after normalization: '{}'",
+                norm
+            ));
+        }
+        seen.insert(norm.clone());
+        normalized.push(norm);
+    }
+
+    Ok(normalized)
 }
 
 /// Infer placeholder types from a sample data line and titles.
@@ -244,17 +293,15 @@ fn verify_csv_data_blocking(
     let (header_line, second_line) = read_header_and_second_line(&mut reader)?;
     let delimiter = detect_delimiter(&header_line);
 
-    // Build titles and index map
-    let titles: Vec<String> = header_line
-        .split(delimiter)
-        .map(|s| s.trim().to_string())
-        .collect();
+    // Validate and normalize titles from header (ensures uniqueness and textual titles)
+    let titles = validate_and_normalize_titles(&header_line, delimiter)?;
+
     let mut title_to_index = HashMap::new();
     for (i, t) in titles.iter().enumerate() {
         title_to_index.insert(t.clone(), i);
     }
 
-    // Infer column checks from second line
+    // Infer column checks from second line using normalized header titles
     let columns = infer_column_checks(&titles, &second_line, delimiter);
 
     // Process file in chunks
