@@ -1,3 +1,4 @@
+// rust
 use crate::job_controller::state::{JobStatus, JobUpdate, JobsState};
 use actix_web::{web, HttpResponse, Responder};
 use common::model::pleaceholder::PlaceholderType;
@@ -24,6 +25,7 @@ pub struct VerifyCsvRequest {
     pub uuid: String,
 }
 
+/// Validate a single cell value against a placeholder type.
 fn validate_value(var_type: &PlaceholderType, value: &str) -> bool {
     match var_type {
         PlaceholderType::Text => true,
@@ -32,6 +34,8 @@ fn validate_value(var_type: &PlaceholderType, value: &str) -> bool {
     }
 }
 
+/// Find the first invalid row inside a chunk using parallel iteration.
+/// Returns Some((row_index, column_title)) when invalid found.
 fn find_first_invalid(
     chunk: &[(usize, String)],
     columns: &[ColumnCheck],
@@ -45,19 +49,19 @@ fn find_first_invalid(
                 if col_idx >= record.len()
                     || !validate_value(&col.placeholder_type, record[col_idx])
                 {
-                    return Some((idx + 2, col.title.clone())); // +2: header + segunda línea
+                    return Some((idx + 2, col.title.clone())); // +2: header + second line offset
                 }
             } else {
-                return Some((idx + 2, col.title.clone())); // título no encontrado
+                return Some((idx + 2, col.title.clone())); // title missing
             }
         }
         None
     })
 }
 
+/// Trim and normalize a CSV cell (remove outer quotes and NBSP).
 fn normalize_cell(cell: &str) -> String {
     let s = cell.trim();
-    // quitar comillas externas simples o dobles
     let s = s
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
@@ -67,6 +71,9 @@ fn normalize_cell(cell: &str) -> String {
     s.replace('\u{00A0}', " ").trim().to_string()
 }
 
+/// Infer placeholder types from a sample data line and titles.
+/// Uses heuristics: email if contains '@' and '.', currency if contains currency symbols,
+/// number if parseable as f64, otherwise text.
 fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) -> Vec<ColumnCheck> {
     let cells: Vec<String> = second_line
         .split(delimiter)
@@ -101,6 +108,9 @@ fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) ->
     columns
 }
 
+/// Update templates table after verification attempt.
+/// If success is true: set verified=1 and last_verified_md5 = datasource_md5.
+/// If success is false: set verified=1 and overwrite datasource_md5 with last_verified_md5.
 fn update_template_verification(
     conn: &Connection,
     id: &str,
@@ -124,6 +134,7 @@ fn update_template_verification(
     Ok(())
 }
 
+/// Send a failure job update with the first invalid row details.
 fn handle_first_invalid_sync(
     tx: &mpsc::Sender<JobUpdate>,
     job_id: &str,
@@ -142,6 +153,7 @@ fn handle_first_invalid_sync(
     Ok(())
 }
 
+/// Process a single chunk synchronously; returns Ok(true) if an invalid was found and handled.
 fn process_chunk_sync(
     tx: &mpsc::Sender<JobUpdate>,
     job_id: &str,
@@ -158,6 +170,39 @@ fn process_chunk_sync(
     Ok(false)
 }
 
+/// Read header and second line from reader; return trimmed lines.
+fn read_header_and_second_line(reader: &mut BufReader<File>) -> Result<(String, String), String> {
+    let mut header_line = String::new();
+    reader
+        .read_line(&mut header_line)
+        .map_err(|e| e.to_string())?;
+    let header_line = header_line.trim_end_matches(&['\n', '\r'][..]).to_string();
+
+    let mut second_line = String::new();
+    if reader
+        .read_line(&mut second_line)
+        .map_err(|e| e.to_string())?
+        == 0
+    {
+        return Err("CSV file has no data rows".to_string());
+    }
+    let second_line = second_line.trim_end_matches(&['\n', '\r'][..]).to_string();
+
+    Ok((header_line, second_line))
+}
+
+/// Detect delimiter by choosing the character with the most occurrences in the header.
+fn detect_delimiter(header_line: &str) -> char {
+    [',', ';', '\t', '|']
+        .iter()
+        .max_by_key(|&&d| header_line.matches(d).count())
+        .copied()
+        .unwrap_or(',')
+}
+
+/// Main blocking verification function executed inside spawn_blocking.
+/// It opens DB, loads template, infers columns from the second line of the CSV file,
+/// processes the file in chunks, sends job updates via `tx`, and updates the database.
 fn verify_csv_data_blocking(
     tx: mpsc::Sender<JobUpdate>,
     job_id: String,
@@ -165,7 +210,7 @@ fn verify_csv_data_blocking(
 ) -> Result<(), String> {
     let start = Instant::now();
 
-    // Abrir DB y obtener template
+    // Open DB and fetch template row
     let conn = Connection::open("templify.sqlite").map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
@@ -185,54 +230,35 @@ fn verify_csv_data_blocking(
 
     let (id, datasource_md5, last_verified_md5, verified) = template;
     if verified != 0 {
-        return Err("Template ya verificado".to_string());
+        return Err("Template already verified".to_string());
     }
 
+    // Build file path and open file
     let file_path = format!("./{}_{}.csv", id, datasource_md5);
     if !Path::new(&file_path).exists() {
-        return Err("Archivo CSV no encontrado".to_string());
+        return Err("CSV file not found".to_string());
     }
-
     let file = File::open(&file_path).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
 
-    // Leer header y segunda línea para inferir columnas y delimitador
-    let mut header_line = String::new();
-    reader
-        .read_line(&mut header_line)
-        .map_err(|e| e.to_string())?;
-    let header_line = header_line.trim_end_matches(&['\n', '\r'][..]);
-    let delimiter = [',', ';', '\t', '|']
-        .iter()
-        .max_by_key(|&&d| header_line.matches(d).count())
-        .copied()
-        .unwrap_or(',');
+    // Read header and second line, detect delimiter
+    let (header_line, second_line) = read_header_and_second_line(&mut reader)?;
+    let delimiter = detect_delimiter(&header_line);
 
-    let mut second_line = String::new();
-    reader
-        .read_line(&mut second_line)
-        .map_err(|e| e.to_string())?;
-    let second_line = second_line.trim_end_matches(&['\n', '\r'][..]);
-
+    // Build titles and index map
     let titles: Vec<String> = header_line
         .split(delimiter)
         .map(|s| s.trim().to_string())
         .collect();
-
     let mut title_to_index = HashMap::new();
     for (i, t) in titles.iter().enumerate() {
         title_to_index.insert(t.clone(), i);
     }
 
-    let columns = infer_column_checks(&titles, second_line, delimiter);
+    // Infer column checks from second line
+    let columns = infer_column_checks(&titles, &second_line, delimiter);
 
-    let titles: Vec<&str> = header_line.split(delimiter).collect();
-    let mut title_to_index = HashMap::new();
-    for (i, t) in titles.iter().enumerate() {
-        title_to_index.insert(t.trim().to_string(), i);
-    }
-
-    // Procesar en chunks
+    // Process file in chunks
     let chunk_size = 250_000;
     let mut chunk = Vec::with_capacity(chunk_size);
     let mut lines_processed = 0usize;
@@ -250,7 +276,7 @@ fn verify_csv_data_blocking(
                 delimiter,
                 start,
             )? {
-                // fallo encontrado: revertir datasource_md5 y marcar verificado
+                // Failure: revert datasource_md5 and mark verified
                 update_template_verification(
                     &conn,
                     &id,
@@ -284,13 +310,13 @@ fn verify_csv_data_blocking(
         }
     }
 
-    // Si llegamos aquí: verificación exitosa
+    // Success: send completed and update db
     let _ = tx.blocking_send(JobUpdate {
         job_id: job_id.clone(),
-        status: JobStatus::Completed("Verificación exitosa".to_string()),
+        status: JobStatus::Completed("Verification successful".to_string()),
     });
     update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, true)?;
-    println!("verify_csv_data terminó en: {:.2?}", start.elapsed());
+    println!("verify_csv_data finished in: {:.2?}", start.elapsed());
     Ok(())
 }
 
@@ -320,7 +346,7 @@ async fn schedule_verify_job(
     let uuid = req.uuid;
 
     tokio::spawn(async move {
-        // Clonar valores específicos para la tarea bloqueante
+        // Clone values to move into the blocking task without consuming `value`
         let tx_block = tx.clone();
         let value_for_blocking = value.clone();
         let uuid_for_blocking = uuid.clone();
