@@ -46,7 +46,7 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
                 {icon_button("format_list_bulleted", "Items", make_style_callback("bulleted_list"), false)}
                 {icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false)}
                 {icon_button("save", "Guardar", link.callback(|_| Msg::Save), false)}
-                <div class="icon-btn">
+                <div>
                     <CsvDataSourceComponent />
                 </div>
             </div>
