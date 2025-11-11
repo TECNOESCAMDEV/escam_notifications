@@ -13,7 +13,7 @@
 use super::helpers::get_img_tag_id_at_cursor;
 use super::messages::Msg;
 use super::state::StaticTextComponent;
-use super::styles::style_tag;
+use crate::components::data_sources::csv::CsvDataSourceComponent;
 use crate::components::statics::text::dialogs::image::image_dialog;
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
@@ -36,7 +36,6 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
 
     html! {
         <div class="static-text-root">
-            { style_tag() }
             <div class="icon-toolbar">
                 {icon_button("undo", "Deshacer", link.callback(|_| Msg::Undo), false)}
                 {icon_button("redo", "Rehacer", link.callback(|_| Msg::Redo), false)}
@@ -47,6 +46,9 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
                 {icon_button("format_list_bulleted", "Items", make_style_callback("bulleted_list"), false)}
                 {icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false)}
                 {icon_button("save", "Guardar", link.callback(|_| Msg::Save), false)}
+                <div class="icon-btn">
+                    <CsvDataSourceComponent />
+                </div>
             </div>
 
             <div class="tab-bar">

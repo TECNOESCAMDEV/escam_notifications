@@ -15,7 +15,6 @@ mod helpers;
 mod messages;
 mod props;
 mod state;
-mod styles;
 mod update;
 mod view;
 mod dialogs;
