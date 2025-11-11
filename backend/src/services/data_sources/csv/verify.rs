@@ -1,9 +1,11 @@
-use crate::job_controller::state::{JobStatus, JobUpdate, JobsState};
+use crate::job_controller::state::{JobUpdate, JobsState};
 use actix_web::{web, HttpResponse, Responder};
-use common::model::pleaceholder::PlaceholderType;
+use common::jobs::JobStatus;
+use common::model::csv::ColumnCheck;
+use common::model::place_holder::PlaceholderType;
+use common::requests::VerifyCsvRequest;
 use rayon::prelude::*;
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{
     collections::{HashMap, HashSet},
@@ -13,20 +15,6 @@ use std::{
     time::Instant,
 };
 use tokio::sync::mpsc;
-
-#[derive(Deserialize, Serialize, Clone)]
-/// Represents a column validation rule with a normalized title and inferred placeholder type.
-pub struct ColumnCheck {
-    pub title: String,
-    pub placeholder_type: PlaceholderType,
-}
-
-#[derive(Deserialize)]
-/// Request payload for the CSV verification endpoint.
-/// Contains the template identifier (uuid) to verify.
-pub struct VerifyCsvRequest {
-    pub uuid: String,
-}
 
 /// Validate a single cell value against a `PlaceholderType`.
 ///
@@ -359,8 +347,10 @@ fn verify_csv_data_blocking(
     // If template has verified flag set (possible bug / partial verification), reset it to 0 and continue.
     // This makes the system treat it as unverified and proceed with a full verification.
     if verified != 0 {
-        conn
-            .execute("UPDATE templates SET verified = 0 WHERE id = ?1", params![id])
+        conn.execute(
+            "UPDATE templates SET verified = 0 WHERE id = ?1",
+            params![id],
+        )
             .map_err(|e| format!("Failed to reset verified flag: {}", e))?;
         println!(
             "Template '{}' had verified != 0; reset verified = 0 and continuing verification",

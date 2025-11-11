@@ -1,4 +1,4 @@
-use serde::Serialize;
+use common::jobs::JobStatus;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 
@@ -8,13 +8,6 @@ pub struct JobsState {
     pub tx: mpsc::Sender<JobUpdate>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub enum JobStatus {
-    Pending,
-    InProgress(u32),
-    Completed(String),
-    Failed(String),
-}
 
 #[derive(Debug)]
 pub struct JobUpdate {
