@@ -64,7 +64,6 @@
     font-size: 14px;
     color: #555;
     margin-bottom: -1px;
-    border-bottom: 2px solid transparent;
     transition: background 0.2s, border-bottom 0.2s;
 }
 
