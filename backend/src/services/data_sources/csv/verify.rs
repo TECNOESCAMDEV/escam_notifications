@@ -290,13 +290,9 @@ fn detect_delimiter(header_line: &str) -> char {
 ///
 /// Workflow summary:
 /// - Load template record from DB and ensure it is not already verified.
-/// - Open corresponding CSV file named `"{id}_{datasource_md5}.csv"`.
-/// - Read header and first data line, detect delimiter.
-/// - Validate and normalize header titles; on failure attempt DB rollback to restore previous MD5.
-/// - Infer column checks from the second line.
-/// - Process remaining lines in chunks, sending progress updates and handling the first invalid row:
-///   if a validation failure occurs, roll back `datasource_md5` and return an error.
-/// - On success set `verified = 1` and update `last_verified_md5`, then return JSON of inferred columns.
+/// - If the template is already verified **and** `datasource_md5 == last_verified_md5`,
+///   short-circuit and return inferred `ColumnCheck` from the first data line.
+/// - Otherwise proceed with the full verification flow (read file, validate headers, scan lines).
 ///
 /// Returns `Ok(String)` with JSON-serialized `ColumnCheck` vector on success, or `Err(String)` on failure.
 fn verify_csv_data_blocking(
@@ -325,6 +321,42 @@ fn verify_csv_data_blocking(
         .map_err(|_| "Template not found".to_string())?;
 
     let (id, datasource_md5, last_verified_md5, verified) = template;
+
+    // Fast-path: if already verified and md5s match, only infer columns from first data line and return
+    if datasource_md5 == last_verified_md5 && verified == 1 {
+        // Build file path and open file
+        let file_path = format!("./{}_{}.csv", id, datasource_md5);
+        if !Path::new(&file_path).exists() {
+            return Err("CSV file not found".to_string());
+        }
+        let file = File::open(&file_path).map_err(|e| e.to_string())?;
+        let mut reader = BufReader::new(file);
+
+        // Read header and second line, detect delimiter
+        let (header_line, second_line) = read_header_and_second_line(&mut reader)?;
+        let delimiter = detect_delimiter(&header_line);
+
+        // Validate and normalize titles from header
+        let titles = validate_and_normalize_titles(&header_line, delimiter)
+            .map_err(|e| format!("Header validation failed: {}", e))?;
+
+        // Infer column checks and return JSON without scanning the whole file or updating DB
+        let columns = infer_column_checks(&titles, &second_line, delimiter);
+        let json_columns = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
+
+        let _ = tx.blocking_send(JobUpdate {
+            job_id: job_id.clone(),
+            status: JobStatus::Completed(json_columns.clone()),
+        });
+
+        println!(
+            "verify_csv_data finished (fast-path) in: {:.2?}",
+            start.elapsed()
+        );
+        return Ok(json_columns);
+    }
+
+    // If template is already verified but md5s differ (or verified flag non-zero), keep original protection
     if verified != 0 {
         return Err("Template already verified".to_string());
     }
