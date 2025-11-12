@@ -202,16 +202,15 @@ impl Component for CsvDataSourceComponent {
                 match res {
                     Ok(()) => {
                         self.upload_error = None;
-                        // optionally, close modal or trigger verification start
                         self.show_modal = false;
-                        // start verification if template_id present
+                        // Always re-trigger verification after upload
                         if let Some(id) = ctx.props().template_id.clone() {
-                            // reuse existing logic to start verification
-                            if self.started_for_template.as_deref() != Some(&id) {
-                                self.is_verifying = true;
-                                self.started_for_template = Some(id.clone());
-                                start_verification(ctx.link().clone(), id);
-                            }
+                            self.is_verifying = true;
+                            // Clear previous results
+                            self.column_checks = None;
+                            // Update started_for_template to avoid double starts
+                            self.started_for_template = Some(id.clone());
+                            start_verification(ctx.link().clone(), id);
                         }
                     }
                     Err(e) => {
