@@ -288,6 +288,14 @@ impl Component for CsvDataSourceComponent {
             html! {}
         };
 
+        // Upload button state
+        let upload_disabled = self.uploading;
+        let upload_onclick = if upload_disabled {
+            yew::Callback::<MouseEvent>::noop()
+        } else {
+            ctx.link().callback(|_| CsvDataSourceMsg::TriggerFilePicker)
+        };
+
         html! {
             <>
             <button class={btn_classes} title="CSV data source" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
@@ -302,16 +310,21 @@ impl Component for CsvDataSourceComponent {
                             <header class="modal-header">
                                 <div class="modal-header-left">
                                     <i class="material-icons header-icon">{"table_chart"}</i>
-                                    <h2 class="modal-title">{"CSV - Opciones"}</h2>
+                                    <h2 class="modal-title">{"CSV - Manager"}</h2>
                                 </div>
                                 <button class="close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"✕"}</button>
                             </header>
                             <div class="modal-body">
                                 <section class="modal-section upload-section">
                                     <h3>{"Subir CSV"}</h3>
-                                    <p class="muted">{"Selecciona un archivo .csv para subir al servidor"}</p>
+                                    <p class="muted">{"Selecciona un archivo .csv como fuente de datos para tu plantilla."}</p>
                                     <div class="upload-actions">
-                                        <button class="primary upload-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::TriggerFilePicker)}>
+                                        <button
+                                            class="primary upload-btn"
+                                            disabled={upload_disabled}
+                                            onclick={upload_onclick}
+                                            aria-busy={self.uploading.to_string()}
+                                            title={ if upload_disabled { "Subiendo..." } else { "Subir archivo" } }>
                                             <i class="material-icons">{"file_upload"}</i>
                                             { if self.uploading { " Subiendo..." } else { " Subir archivo" } }
                                         </button>
