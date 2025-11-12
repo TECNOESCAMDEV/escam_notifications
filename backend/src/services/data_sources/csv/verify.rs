@@ -88,7 +88,7 @@ fn validate_and_normalize_titles(
         .collect();
 
     if raw_titles.is_empty() {
-        return Err("Header line contains no titles".to_string());
+        return Err("La línea de cabecera no contiene títulos".to_string());
     }
 
     let mut seen = HashSet::new();
@@ -97,13 +97,13 @@ fn validate_and_normalize_titles(
     for t in raw_titles {
         let t_trim = t.trim();
         if t_trim.is_empty() {
-            return Err("Header contains an empty title".to_string());
+            return Err("La cabecera contiene un título vacío".to_string());
         }
 
         // Reject purely numeric titles
         if t_trim.parse::<f64>().is_ok() {
             return Err(format!(
-                "Header titles must be textual, found numeric title: '{}'",
+                "Los títulos de la cabecera deben ser textuales, se encontró el título numérico: '{}'",
                 t_trim
             ));
         }
@@ -113,7 +113,7 @@ fn validate_and_normalize_titles(
 
         if seen.contains(&norm) {
             return Err(format!(
-                "Duplicate header title after normalization: '{}'",
+                "Título duplicado en la cabecera tras normalizar: '{}'",
                 norm
             ));
         }
@@ -211,7 +211,7 @@ fn handle_first_invalid_sync(
     let _ = tx.blocking_send(JobUpdate {
         job_id: job_id.to_string(),
         status: JobStatus::Failed(format!(
-            "First invalid row at: row {}, column '{}'",
+            "Primera fila inválida en: fila {}, columna '{}'",
             row, title
         )),
     });
@@ -256,7 +256,7 @@ fn read_header_and_second_line(reader: &mut BufReader<File>) -> Result<(String, 
         .map_err(|e| e.to_string())?
         == 0
     {
-        return Err("CSV file has no data rows".to_string());
+        return Err("El archivo CSV no contiene filas de datos".to_string());
     }
     let second_line = second_line.trim_end_matches(&['\n', '\r'][..]).to_string();
 
@@ -306,7 +306,7 @@ fn verify_csv_data_blocking(
                 row.get::<_, i32>(3)?,
             ))
         })
-        .map_err(|_| "Template not found".to_string())?;
+        .map_err(|_| "Plantilla no encontrada".to_string())?;
 
     let (id, datasource_md5, last_verified_md5, verified) = template;
 
@@ -315,7 +315,7 @@ fn verify_csv_data_blocking(
         // Build file path and open file
         let file_path = format!("./{}_{}.csv", id, datasource_md5);
         if !Path::new(&file_path).exists() {
-            return Err("CSV file not found".to_string());
+            return Err("Archivo CSV no encontrado".to_string());
         }
         let file = File::open(&file_path).map_err(|e| e.to_string())?;
         let mut reader = BufReader::new(file);
@@ -326,7 +326,7 @@ fn verify_csv_data_blocking(
 
         // Validate and normalize titles from header
         let titles = validate_and_normalize_titles(&header_line, delimiter)
-            .map_err(|e| format!("Header validation failed: {}", e))?;
+            .map_err(|e| format!("Validación de cabecera fallida: {}", e))?;
 
         // Infer column checks and return JSON without scanning the whole file or updating DB
         let columns = infer_column_checks(&titles, &second_line, delimiter);
@@ -351,9 +351,9 @@ fn verify_csv_data_blocking(
             "UPDATE templates SET verified = 0 WHERE id = ?1",
             params![id],
         )
-            .map_err(|e| format!("Failed to reset verified flag: {}", e))?;
+            .map_err(|e| format!("Fallo al restablecer el flag verified: {}", e))?;
         println!(
-            "Template '{}' had verified != 0; reset verified = 0 and continuing verification",
+            "La plantilla '{}' tenía verified != 0; restableciendo verified = 0 y continuando verificación",
             id
         );
     }
@@ -361,7 +361,7 @@ fn verify_csv_data_blocking(
     // Build file path and open file
     let file_path = format!("./{}_{}.csv", id, datasource_md5);
     if !Path::new(&file_path).exists() {
-        return Err("CSV file not found".to_string());
+        return Err("Archivo CSV no encontrado".to_string());
     }
     let file = File::open(&file_path).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
@@ -378,9 +378,12 @@ fn verify_csv_data_blocking(
             // attempt revert; if revert fails, return combined error
             update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, false)
                 .map_err(|db_err| {
-                    format!("Header validation failed: {}; revert failed: {}", e, db_err)
+                    format!(
+                        "Validación de cabecera fallida: {}; fallo al revertir: {}",
+                        e, db_err
+                    )
                 })?;
-            return Err(format!("Header validation failed: {}", e));
+            return Err(format!("Validación de cabecera fallida: {}", e));
         }
     };
 
@@ -512,7 +515,7 @@ async fn schedule_verify_job(
             Err(join_err) => {
                 js.jobs.write().await.insert(
                     value,
-                    JobStatus::Failed(format!("join error: {}", join_err)),
+                    JobStatus::Failed(format!("error al esperar la tarea: {}", join_err)),
                 );
             }
         }
@@ -564,7 +567,7 @@ fn process_and_handle_chunk(
     if process_chunk_sync(tx, job_id, chunk, columns, title_to_index, delimiter, start)? {
         // Failure: revert datasource_md5 and mark verified
         update_template_verification(conn, id, datasource_md5, last_verified_md5, false)?;
-        return Err("Verification failed: invalid row found".to_string());
+        return Err("Verificación fallida: se encontró una fila inválida".to_string());
     }
     Ok(())
 }
