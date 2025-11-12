@@ -261,11 +261,23 @@ impl Component for CsvDataSourceComponent {
             "CSV".to_string()
         };
 
-        let btn_classes = if status_text.len() > 30 {
-            "icon-btn limited"
-        } else {
-            "icon-btn"
+        // Determine if error state
+        let is_error = match (&self.job_status, &self.verify_result) {
+            (Some(JobStatus::Failed(_)), _) => true,
+            (_, Some(Err(_))) => true,
+            _ => false,
         };
+
+        // Compute button classes
+        let mut btn_classes = if status_text.len() > 30 {
+            "icon-btn limited".to_string()
+        } else {
+            "icon-btn".to_string()
+        };
+        if is_error {
+            btn_classes.push_str(" error");
+        }
+        let title_attr = status_text.clone();
 
         // column options from column_checks
         let column_options = if let Some(cols) = &self.column_checks {
@@ -305,7 +317,10 @@ impl Component for CsvDataSourceComponent {
 
         html! {
             <>
-            <button class={btn_classes} title="CSV data source" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
+            <button
+                class={btn_classes}
+                title={title_attr}
+                onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
                 <i class="material-icons">{"table_chart"}</i>
                 <span class="icon-label">{status_text}</span>
             </button>

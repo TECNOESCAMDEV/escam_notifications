@@ -36,18 +36,38 @@ fn find_first_invalid(
     columns: &[ColumnCheck],
     title_to_index: &HashMap<String, usize>,
     delimiter: char,
-) -> Option<(usize, String)> {
+) -> Option<(usize, String, String)> {
     chunk.par_iter().find_map_any(|(idx, line)| {
         let record: Vec<_> = line.split(delimiter).collect();
         for col in columns {
             if let Some(&col_idx) = title_to_index.get(&col.title) {
-                if col_idx >= record.len()
-                    || !validate_value(&col.placeholder_type, record[col_idx])
-                {
-                    return Some((idx + 2, col.title.clone())); // +2: header + second line offset
+                if col_idx >= record.len() {
+                    return Some((
+                        idx + 2,
+                        col.title.clone(),
+                        "columna ausente en la fila".to_string(),
+                    ));
+                }
+                let cell = normalize_cell(record[col_idx]);
+                if !validate_value(&col.placeholder_type, &cell) {
+                    let tipo = match col.placeholder_type {
+                        PlaceholderType::Text => "texto",
+                        PlaceholderType::Number => "número",
+                        PlaceholderType::Currency => "moneda",
+                        PlaceholderType::Email => "email",
+                    };
+                    return Some((
+                        idx + 2,
+                        col.title.clone(),
+                        format!("valor '{}' no cumple el tipo esperado: {}", cell, tipo),
+                    ));
                 }
             } else {
-                return Some((idx + 2, col.title.clone())); // title missing
+                return Some((
+                    idx + 2,
+                    col.title.clone(),
+                    "título de cabecera no encontrado".to_string(),
+                ));
             }
         }
         None
@@ -206,13 +226,14 @@ fn handle_first_invalid_sync(
     job_id: &str,
     row: usize,
     title: &str,
+    reason: &str,
     start: Instant,
 ) -> Result<(), String> {
     let _ = tx.blocking_send(JobUpdate {
         job_id: job_id.to_string(),
         status: JobStatus::Failed(format!(
-            "Primera fila inválida en: fila {}, columna '{}'",
-            row, title
+            "Primera fila inválida en: fila {}, columna '{}': {}",
+            row, title, reason
         )),
     });
     println!("verify_csv_data finished in: {:.2?}", start.elapsed());
@@ -224,19 +245,20 @@ fn handle_first_invalid_sync(
 /// Returns `Ok(true)` if an invalid row was found and handled (a `JobUpdate::Failed` has been sent),
 /// or `Ok(false)` if the chunk passed validation. Errors are returned as `Err(String)`.
 fn process_chunk_sync(
-    tx: &mpsc::Sender<JobUpdate>,
-    job_id: &str,
+    _tx: &mpsc::Sender<JobUpdate>,
+    _job_id: &str,
     chunk: &[(usize, String)],
     columns: &[ColumnCheck],
     title_to_index: &HashMap<String, usize>,
     delimiter: char,
-    start: Instant,
-) -> Result<bool, String> {
-    if let Some((row, title)) = find_first_invalid(chunk, columns, title_to_index, delimiter) {
-        handle_first_invalid_sync(tx, job_id, row, &title, start)?;
-        return Ok(true);
-    }
-    Ok(false)
+    _start: Instant,
+) -> Result<Option<(usize, String, String)>, String> {
+    Ok(find_first_invalid(
+        chunk,
+        columns,
+        title_to_index,
+        delimiter,
+    ))
 }
 
 /// Read the header line and the first data line from a CSV reader.
@@ -564,10 +586,17 @@ fn process_and_handle_chunk(
     datasource_md5: &str,
     last_verified_md5: &str,
 ) -> Result<(), String> {
-    if process_chunk_sync(tx, job_id, chunk, columns, title_to_index, delimiter, start)? {
-        // Failure: revert datasource_md5 and mark verified
+    if let Some((row, title, reason)) =
+        process_chunk_sync(tx, job_id, chunk, columns, title_to_index, delimiter, start)?
+    {
+        // Notify to the job controller about the first invalid row
+        handle_first_invalid_sync(tx, job_id, row, &title, &reason, start)?;
+        // Rollback the template verification state in the database
         update_template_verification(conn, id, datasource_md5, last_verified_md5, false)?;
-        return Err("Verificación fallida: se encontró una fila inválida".to_string());
+        return Err(format!(
+            "Verificación fallida: fila {}, columna '{}': {}",
+            row, title, reason
+        ));
     }
     Ok(())
 }

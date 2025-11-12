@@ -47,6 +47,12 @@
     line-height: 1;
 }
 
+.icon-btn.error,
+.icon-btn.error .icon-label,
+.icon-btn.error i.material-icons {
+    color: #dc2626;
+}
+
 .material-icons {
     vertical-align: middle;
     font-size: 20px;
