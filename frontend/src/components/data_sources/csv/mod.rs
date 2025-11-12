@@ -42,7 +42,7 @@ impl CsvDataSourceComponent {
     }
 
     /// Start upload using XHR + FormData to emulate the curl multipart form.
-    fn start_upload(link: yew::html::Scope<Self>, template_id: Option<String>, file: File) {
+    fn start_upload(link: html::Scope<Self>, template_id: Option<String>, file: File) {
         // clone file and template string for closure
         let filename = file.name();
         let tpl = template_id.unwrap_or_default();
@@ -363,7 +363,7 @@ impl Component for CsvDataSourceComponent {
 }
 
 // start_verification and helpers remain mostly the same as before:
-fn start_verification(link: yew::html::Scope<CsvDataSourceComponent>, template_id: String) {
+fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: String) {
     spawn_local(async move {
         let url = "/api/data_sources/csv/verify";
         let body = serde_json::json!({ "uuid": template_id }).to_string();
