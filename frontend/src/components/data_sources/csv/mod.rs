@@ -120,23 +120,23 @@ impl Component for CsvDataSourceComponent {
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
         // Build a user-facing status label in Spanish per JobStatus:
-        // Pending -> "Verificando"
-        // InProgress(n) -> "Verificando: n"
-        // Completed(_) -> "Verified"
-        // Failed(msg) -> "Failed: msg"
+        // Pending -> "Verificando CSV..."
+        // InProgress(n) -> "Líneas verificadas: n"
+        // Completed(_) -> "CSV Verificado"
+        // Failed(msg) -> "Error: msg"
         let status_text = if let Some(job_status) = &self.job_status {
             match job_status {
-                JobStatus::Pending => "Verificando".to_string(),
+                JobStatus::Pending => "Verificando CSV...".to_string(),
                 JobStatus::InProgress(n) => format!("Líneas verificadas: {}", n.to_formatted_string(&Locale::es)),
                 JobStatus::Completed(_) => "CSV Verificado".to_string(),
-                JobStatus::Failed(msg) => format!("Failed: {}", msg),
+                JobStatus::Failed(msg) => format!("Error: {}", msg),
             }
         } else if self.is_verifying {
-            "Verificando".to_string()
+            "Verificando CSV...".to_string()
         } else if let Some(Ok(true)) = &self.verify_result {
-            "Verified".to_string()
+            "CSV Verificado".to_string()
         } else if let Some(Err(e)) = &self.verify_result {
-            format!("Failed: {}", e)
+            format!("Error: {}", e)
         } else {
             "CSV".to_string()
         };
