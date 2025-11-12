@@ -359,7 +359,7 @@ impl Component for CsvDataSourceComponent {
                             </div>
 
                             <footer class="modal-footer">
-                                <button class="secondary" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"Cerrar"}</button>
+                                <button class="secondary close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"Cerrar"}</button>
                             </footer>
                         </div>
                     </div>

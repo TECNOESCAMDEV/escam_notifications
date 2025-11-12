@@ -180,10 +180,23 @@
 }
 
 .close-btn {
-    background: transparent;
-    border: none;
-    font-size: 18px;
+    border: 1px solid #a6a6a6;
+    background: #ffffff;
+    color: inherit;
+    padding: 6px 10px;
+    border-radius: 6px;
     cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    transition: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.close-btn:hover {
+    background: #f7f7f8;
+    border-color: #d1d5db;
 }
 
 .column-list {
@@ -212,11 +225,13 @@
     border-radius: 6px;
     cursor: pointer;
     background: transparent;
-    transition: background 0.12s;
+    border: 1px solid #96c2ff;
+    transition: none;
 }
 
 .col-option:hover {
     background: #f3f4f6;
+    border-color: #d1d5db;
 }
 
 .column-list::-webkit-scrollbar {
@@ -265,12 +280,4 @@
     font-family: "Roboto", "Helvetica", Arial, sans-serif;
     font-weight: 500;
     font-size: 1.1rem;
-}
-
-.close-btn {
-    background: transparent;
-    border: none;
-    font-size: 18px;
-    cursor: pointer;
-    padding: 6px;
 }
