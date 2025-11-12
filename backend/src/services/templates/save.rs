@@ -21,24 +21,22 @@ pub async fn process(payload: web::Json<Template>) -> impl Responder {
 /// - If no images are provided:
 ///     - Deletes all images associated with the template.
 pub async fn save_template(payload: &Template) -> Result<(), String> {
-    // Validate that the template ID is not empty
     if payload.id.trim().is_empty() {
         return Err("Template id cannot be empty".to_string());
     }
 
-    // Open a SQLite connection to the file templify.sqlite
     let conn = Connection::open("templify.sqlite").map_err(|e| e.to_string())?;
 
     // Insert or update the template
     conn.execute(
-        "INSERT OR REPLACE INTO templates (id, text) VALUES (?1, ?2)",
+        "INSERT INTO templates (id, text) VALUES (?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET text = excluded.text",
         params![&payload.id, &payload.text],
     )
         .map_err(|e| e.to_string())?;
 
     match &payload.images {
         Some(images) => {
-            // Get existing image IDs for this template
             let existing_ids: Vec<String> = conn
                 .prepare("SELECT id FROM images WHERE template_id = ?1")
                 .map_err(|e| e.to_string())?
@@ -47,7 +45,6 @@ pub async fn save_template(payload: &Template) -> Result<(), String> {
                 .filter_map(Result::ok)
                 .collect();
 
-            // Delete images that are no longer present
             for old_id in &existing_ids {
                 if !images.iter().any(|img| &img.id == old_id) {
                     conn.execute(
@@ -58,7 +55,6 @@ pub async fn save_template(payload: &Template) -> Result<(), String> {
                 }
             }
 
-            // Insert or update images from the payload
             for image in images {
                 conn.execute(
                     "INSERT OR REPLACE INTO images (id, template_id, base64) VALUES (?1, ?2, ?3)",
@@ -68,7 +64,6 @@ pub async fn save_template(payload: &Template) -> Result<(), String> {
             }
         }
         None => {
-            // If no images are provided, delete all images for this template
             conn.execute(
                 "DELETE FROM images WHERE template_id = ?1",
                 params![&payload.id],

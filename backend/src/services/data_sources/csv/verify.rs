@@ -197,8 +197,8 @@ fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) ->
 fn update_template_verification(
     conn: &Connection,
     id: &str,
-    datasource_md5: &str,
-    last_verified_md5: &str,
+    datasource_md5: Option<&str>,
+    last_verified_md5: Option<&str>,
     success: bool,
 ) -> Result<(), String> {
     if success {
@@ -309,7 +309,7 @@ fn verify_csv_data_blocking(
 ) -> Result<String, String> {
     let start = Instant::now();
 
-    // Open DB and fetch template row
+    // Open DB and fetch template row (allow NULLs)
     let conn = Connection::open("templify.sqlite").map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
@@ -320,51 +320,56 @@ fn verify_csv_data_blocking(
         .query_row(params![template_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
                 row.get::<_, i32>(3)?,
             ))
         })
-        .map_err(|_| "Plantilla no encontrada".to_string())?;
+        .map_err(|e| {
+            "Fallo al obtener la plantilla de la base de datos: ".to_string() + &e.to_string()
+        })?;
 
     let (id, datasource_md5, last_verified_md5, verified) = template;
 
-    // Fast-path: if already verified and md5s match, only infer columns from first data line and return
-    if datasource_md5 == last_verified_md5 && verified == 1 {
-        // Build file path and open file
-        let file_path = format!("./{}_{}.csv", id, datasource_md5);
-        if !Path::new(&file_path).exists() {
-            return Err("Archivo CSV no encontrado".to_string());
+    // Fast-path: require both MD5 presentes y coincidentes, y verified == 1
+    if let (Some(ds_md5), Some(last_md5)) =
+        (datasource_md5.as_deref(), last_verified_md5.as_deref())
+    {
+        if ds_md5 == last_md5 && verified == 1 {
+            // Build file path and open file
+            let file_path = format!("./{}_{}.csv", id, ds_md5);
+            if !Path::new(&file_path).exists() {
+                return Err("Archivo CSV no encontrado".to_string());
+            }
+            let file = File::open(&file_path).map_err(|e| e.to_string())?;
+            let mut reader = BufReader::new(file);
+
+            // Read header and second line, detect delimiter
+            let (header_line, second_line) = read_header_and_second_line(&mut reader)?;
+            let delimiter = detect_delimiter(&header_line);
+
+            // Validate and normalize titles from header
+            let titles = validate_and_normalize_titles(&header_line, delimiter)
+                .map_err(|e| format!("Validación de cabecera fallida: {}", e))?;
+
+            // Infer column checks and return JSON without scanning the whole file or updating DB
+            let columns = infer_column_checks(&titles, &second_line, delimiter);
+            let json_columns = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
+
+            let _ = tx.blocking_send(JobUpdate {
+                job_id: job_id.clone(),
+                status: JobStatus::Completed(json_columns.clone()),
+            });
+
+            println!(
+                "verify_csv_data finished (fast-path) in: {:.2?}",
+                start.elapsed()
+            );
+            return Ok(json_columns);
         }
-        let file = File::open(&file_path).map_err(|e| e.to_string())?;
-        let mut reader = BufReader::new(file);
-
-        // Read header and second line, detect delimiter
-        let (header_line, second_line) = read_header_and_second_line(&mut reader)?;
-        let delimiter = detect_delimiter(&header_line);
-
-        // Validate and normalize titles from header
-        let titles = validate_and_normalize_titles(&header_line, delimiter)
-            .map_err(|e| format!("Validación de cabecera fallida: {}", e))?;
-
-        // Infer column checks and return JSON without scanning the whole file or updating DB
-        let columns = infer_column_checks(&titles, &second_line, delimiter);
-        let json_columns = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
-
-        let _ = tx.blocking_send(JobUpdate {
-            job_id: job_id.clone(),
-            status: JobStatus::Completed(json_columns.clone()),
-        });
-
-        println!(
-            "verify_csv_data finished (fast-path) in: {:.2?}",
-            start.elapsed()
-        );
-        return Ok(json_columns);
     }
 
     // If template has verified flag set (possible bug / partial verification), reset it to 0 and continue.
-    // This makes the system treat it as unverified and proceed with a full verification.
     if verified != 0 {
         conn.execute(
             "UPDATE templates SET verified = 0 WHERE id = ?1",
@@ -377,8 +382,24 @@ fn verify_csv_data_blocking(
         );
     }
 
-    // Build file path and open file
-    let file_path = format!("./{}_{}.csv", id, datasource_md5);
+    // Build file path and open file: datasource_md5 must be present to locate the file
+    let ds_md5 = match datasource_md5.as_deref() {
+        Some(s) => s,
+        None => {
+            // No datasource_md5: nothing que verificar -> revert to last (if any) then error
+            update_template_verification(
+                &conn,
+                &id,
+                datasource_md5.as_deref(),
+                last_verified_md5.as_deref(),
+                false,
+            )
+                .map_err(|db_err| format!("Datasource MD5 ausente; fallo al revertir: {}", db_err))?;
+            return Err("Sin archivos de datos asociados para verificar".to_string());
+        }
+    };
+
+    let file_path = format!("./{}_{}.csv", id, ds_md5);
     if !Path::new(&file_path).exists() {
         return Err("Archivo CSV no encontrado".to_string());
     }
@@ -394,8 +415,13 @@ fn verify_csv_data_blocking(
     let titles = match validate_and_normalize_titles(&header_line, delimiter) {
         Ok(t) => t,
         Err(e) => {
-            // attempt revert; if revert fails, return combined error
-            update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, false)
+            update_template_verification(
+                &conn,
+                &id,
+                datasource_md5.as_deref(),
+                last_verified_md5.as_deref(),
+                false,
+            )
                 .map_err(|db_err| {
                     format!(
                         "Validación de cabecera fallida: {}; fallo al revertir: {}",
@@ -433,8 +459,8 @@ fn verify_csv_data_blocking(
                 start,
                 &conn,
                 &id,
-                &datasource_md5,
-                &last_verified_md5,
+                datasource_md5.as_deref(),
+                last_verified_md5.as_deref(),
             )?;
             lines_processed += chunk.len();
             chunk.clear();
@@ -456,14 +482,20 @@ fn verify_csv_data_blocking(
             start,
             &conn,
             &id,
-            &datasource_md5,
-            &last_verified_md5,
+            datasource_md5.as_deref(),
+            last_verified_md5.as_deref(),
         )?;
     }
 
     // If we reach here: verification successful
-    // Update DB: set verified and last_verified_md5
-    update_template_verification(&conn, &id, &datasource_md5, &last_verified_md5, true)?;
+    // Update DB: set verified and last_verified_md5 (allow NULL)
+    update_template_verification(
+        &conn,
+        &id,
+        datasource_md5.as_deref(),
+        last_verified_md5.as_deref(),
+        true,
+    )?;
 
     // Serialize inferred columns to JSON to return and to send in JobUpdate
     let json_columns = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
@@ -580,8 +612,8 @@ fn process_and_handle_chunk(
     start: Instant,
     conn: &Connection,
     id: &str,
-    datasource_md5: &str,
-    last_verified_md5: &str,
+    datasource_md5: Option<&str>,
+    last_verified_md5: Option<&str>,
 ) -> Result<(), String> {
     if let Some((row, title, reason)) =
         process_chunk_sync(chunk, columns, title_to_index, delimiter)?
