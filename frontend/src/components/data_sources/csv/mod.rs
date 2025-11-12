@@ -300,10 +300,12 @@ impl Component for CsvDataSourceComponent {
                     <div class="modal-overlay" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
                         <div class="modal-card" onclick={|e: MouseEvent| e.stop_propagation()}>
                             <header class="modal-header">
-                                <h2>{"CSV - Opciones"}</h2>
+                                <div class="modal-header-left">
+                                    <i class="material-icons header-icon">{"table_chart"}</i>
+                                    <h2 class="modal-title">{"CSV - Opciones"}</h2>
+                                </div>
                                 <button class="close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"✕"}</button>
                             </header>
-
                             <div class="modal-body">
                                 <section class="modal-section upload-section">
                                     <h3>{"Subir CSV"}</h3>
