@@ -19,6 +19,8 @@ pub struct CsvDataSourceComponent {
     job_status: Option<JobStatus>,
     /// Parsed column checks when job completes successfully.
     column_checks: Option<Vec<ColumnCheck>>,
+    /// Template id for which verification has already been started (prevent duplicates).
+    started_for_template: Option<String>,
 }
 
 #[derive(Properties, PartialEq)]
@@ -38,119 +40,16 @@ impl Component for CsvDataSourceComponent {
     type Message = CsvDataSourceMsg;
     type Properties = CsvDataSourceProps;
 
-    fn create(ctx: &Context<Self>) -> Self {
-        let mut instance = CsvDataSourceComponent {
+    fn create(_ctx: &Context<Self>) -> Self {
+        // Do not start network activity in `create`. Start after first render or on prop change.
+        CsvDataSourceComponent {
             is_verifying: false,
             verify_result: None,
             job_ticket: None,
             job_status: None,
             column_checks: None,
-        };
-
-        if let Some(id) = ctx.props().template_id.clone() {
-            instance.is_verifying = true;
-            let link = ctx.link().clone();
-
-            // Initial POST request that returns a ticket (uuid)
-            spawn_local(async move {
-                let url = "/api/data_sources/csv/verify";
-                let body = serde_json::json!({ "uuid": id }).to_string();
-                match Request::post(url)
-                    .header("Content-Type", "application/json")
-                    .body(body)
-                    .unwrap()
-                    .send()
-                    .await
-                {
-                    Ok(response) => {
-                        let status = response.status();
-                        let text = response.text().await.unwrap_or_default();
-                        if status == 200 {
-                            // Try to extract a ticket from JSON or plain text
-                            let ticket =
-                                extract_ticket_from_text(&text).unwrap_or_else(|| text.clone());
-                            link.send_message(CsvDataSourceMsg::TicketReceived(ticket.clone()));
-
-                            // Start polling job status periodically
-                            let poll_link = link.clone();
-                            spawn_local(async move {
-                                let mut finished = false;
-                                while !finished {
-                                    sleep(Duration::from_secs(1)).await;
-                                    let status_url =
-                                        format!("/api/data_sources/csv/status/{}", ticket);
-                                    match Request::get(&status_url).send().await {
-                                        Ok(resp) => {
-                                            if let Ok(body_text) = resp.text().await {
-                                                if let Some(json_val) =
-                                                    serde_json::from_str::<Value>(&body_text).ok()
-                                                {
-                                                    if let Some(job_status) =
-                                                        parse_job_status(&json_val)
-                                                    {
-                                                        // Notify status to component
-                                                        poll_link.send_message(
-                                                            CsvDataSourceMsg::StatusUpdated(
-                                                                job_status.clone(),
-                                                            ),
-                                                        );
-                                                        match job_status {
-                                                            JobStatus::Completed(_)
-                                                            | JobStatus::Failed(_) => {
-                                                                finished = true;
-                                                            }
-                                                            _ => {}
-                                                        }
-                                                    } else {
-                                                        // Could not parse job status: send error and stop polling
-                                                        poll_link.send_message(
-                                                            CsvDataSourceMsg::VerifyError(
-                                                                "Could not parse job status".into(),
-                                                            ),
-                                                        );
-                                                        finished = true;
-                                                    }
-                                                } else {
-                                                    poll_link.send_message(
-                                                        CsvDataSourceMsg::VerifyError(
-                                                            "Response is not valid JSON".into(),
-                                                        ),
-                                                    );
-                                                    finished = true;
-                                                }
-                                            } else {
-                                                poll_link.send_message(
-                                                    CsvDataSourceMsg::VerifyError(
-                                                        "Could not read response body".into(),
-                                                    ),
-                                                );
-                                                finished = true;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            poll_link.send_message(CsvDataSourceMsg::VerifyError(
-                                                e.to_string(),
-                                            ));
-                                            finished = true;
-                                        }
-                                    }
-                                }
-                            });
-                        } else {
-                            link.send_message(CsvDataSourceMsg::VerifyCompleted(Err(format!(
-                                "HTTP {}: {}",
-                                status, text
-                            ))));
-                        }
-                    }
-                    Err(err) => {
-                        link.send_message(CsvDataSourceMsg::VerifyCompleted(Err(err.to_string())));
-                    }
-                }
-            });
+            started_for_template: None,
         }
-
-        instance
     }
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
@@ -203,6 +102,21 @@ impl Component for CsvDataSourceComponent {
         }
     }
 
+    /// Called when properties change; if `template_id` transitions to Some, start the verification.
+    fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
+        if old_props.template_id != ctx.props().template_id {
+            if let Some(id) = ctx.props().template_id.clone() {
+                if self.started_for_template.as_deref() != Some(&id) {
+                    self.is_verifying = true;
+                    self.started_for_template = Some(id.clone());
+                    start_verification(ctx.link().clone(), id);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn view(&self, _ctx: &Context<Self>) -> Html {
         // Build a user-facing status label in English
         let status_text = if self.is_verifying {
@@ -226,6 +140,111 @@ impl Component for CsvDataSourceComponent {
             </button>
         }
     }
+
+    /// Called after render; kick off verification if it's the first render and `template_id` is Some.
+    fn rendered(&mut self, ctx: &Context<Self>, first_render: bool) {
+        if first_render {
+            if let Some(id) = ctx.props().template_id.clone() {
+                if self.started_for_template.as_deref() != Some(&id) {
+                    self.is_verifying = true;
+                    self.started_for_template = Some(id.clone());
+                    start_verification(ctx.link().clone(), id);
+                }
+            }
+        }
+    }
+}
+
+/// Start the POST request that returns a ticket and begin polling the job status.
+/// This function runs asynchronously and communicates results back to the component via `link`.
+fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: String) {
+    spawn_local(async move {
+        let url = "/api/data_sources/csv/verify";
+        let body = serde_json::json!({ "uuid": template_id }).to_string();
+        match Request::post(url)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .unwrap()
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                if status == 200 {
+                    // Try to extract a ticket from JSON or plain text
+                    let ticket = extract_ticket_from_text(&text).unwrap_or_else(|| text.clone());
+                    link.send_message(CsvDataSourceMsg::TicketReceived(ticket.clone()));
+
+                    // Start polling job status periodically
+                    let poll_link = link.clone();
+                    spawn_local(async move {
+                        let mut finished = false;
+                        while !finished {
+                            sleep(Duration::from_secs(1)).await;
+                            let status_url = format!("/api/data_sources/csv/status/{}", ticket);
+                            match Request::get(&status_url).send().await {
+                                Ok(resp) => {
+                                    if let Ok(body_text) = resp.text().await {
+                                        if let Some(json_val) =
+                                            serde_json::from_str::<Value>(&body_text).ok()
+                                        {
+                                            if let Some(job_status) = parse_job_status(&json_val) {
+                                                // Notify status to component
+                                                poll_link.send_message(
+                                                    CsvDataSourceMsg::StatusUpdated(
+                                                        job_status.clone(),
+                                                    ),
+                                                );
+                                                match job_status {
+                                                    JobStatus::Completed(_)
+                                                    | JobStatus::Failed(_) => {
+                                                        finished = true;
+                                                    }
+                                                    _ => {}
+                                                }
+                                            } else {
+                                                // Could not parse job status: send error and stop polling
+                                                poll_link.send_message(
+                                                    CsvDataSourceMsg::VerifyError(
+                                                        "Could not parse job status".into(),
+                                                    ),
+                                                );
+                                                finished = true;
+                                            }
+                                        } else {
+                                            poll_link.send_message(CsvDataSourceMsg::VerifyError(
+                                                "Response is not valid JSON".into(),
+                                            ));
+                                            finished = true;
+                                        }
+                                    } else {
+                                        poll_link.send_message(CsvDataSourceMsg::VerifyError(
+                                            "Could not read response body".into(),
+                                        ));
+                                        finished = true;
+                                    }
+                                }
+                                Err(e) => {
+                                    poll_link
+                                        .send_message(CsvDataSourceMsg::VerifyError(e.to_string()));
+                                    finished = true;
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    link.send_message(CsvDataSourceMsg::VerifyCompleted(Err(format!(
+                        "HTTP {}: {}",
+                        status, text
+                    ))));
+                }
+            }
+            Err(err) => {
+                link.send_message(CsvDataSourceMsg::VerifyCompleted(Err(err.to_string())));
+            }
+        }
+    });
 }
 
 /// Try to extract a ticket UUID from a text that may be JSON with `ticket` or `uuid` fields,
