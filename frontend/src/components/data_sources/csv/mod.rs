@@ -1,31 +1,33 @@
 use common::jobs::JobStatus;
 use common::model::csv::ColumnCheck;
-use gloo_net::http::Request;
 use gloo_timers::future::sleep;
 use num_format::{Locale, ToFormattedString};
 use serde_json::Value;
 use std::time::Duration;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use yew::{html, Component, Context, Html, Properties};
+use web_sys::{Event, File, HtmlInputElement};
+use yew::{html, Component, Context, Html, MouseEvent, NodeRef, Properties};
 
-/// Component that triggers a CSV verification job and polls for status.
+/// Component that triggers a CSV verification job, polls status and provides upload + modal UI.
 pub struct CsvDataSourceComponent {
-    /// Flag indicating an ongoing verification.
     is_verifying: bool,
-    /// Result of the verification once finished.
     verify_result: Option<Result<bool, String>>,
-    /// Ticket UUID returned by the verify POST.
     job_ticket: Option<String>,
-    /// Latest polled job status.
     job_status: Option<JobStatus>,
-    /// Parsed column checks when job completes successfully.
     column_checks: Option<Vec<ColumnCheck>>,
-    /// Template id for which verification has already been started (prevent duplicates).
     started_for_template: Option<String>,
+
+    // UI state
+    show_modal: bool,
+    file_input_ref: NodeRef,
+    uploading: bool,
+    upload_error: Option<String>,
+    selected_column: Option<usize>,
 }
 
 impl CsvDataSourceComponent {
-    /// Parse completed payload and store ColumnCheck vector in component state.
     fn apply_completed(&mut self, payload: String) {
         match serde_json::from_str::<Vec<ColumnCheck>>(&payload) {
             Ok(cols) => {
@@ -37,6 +39,64 @@ impl CsvDataSourceComponent {
                 self.verify_result = Some(Err(format!("Deserialize ColumnCheck: {}", e)));
             }
         }
+    }
+
+    /// Start upload using XHR + FormData to emulate the curl multipart form.
+    fn start_upload(link: yew::html::Scope<Self>, template_id: Option<String>, file: File) {
+        // clone file and template string for closure
+        let filename = file.name();
+        let tpl = template_id.unwrap_or_default();
+        spawn_local(async move {
+            let url = "/api/data_sources/csv/upload";
+
+            // Build FormData
+            let form = web_sys::FormData::new().expect("FormData available");
+            let json = format!("{{\"template_id\":\"{}\"}}", tpl);
+            form.append_with_str("json", &json).ok();
+            form.append_with_blob_and_filename("file", &file, &filename)
+                .ok();
+
+            // Create XHR
+            let xhr = web_sys::XmlHttpRequest::new().expect("xhr");
+            xhr.open_with_async("POST", &url, true).expect("open");
+
+            // Handlers
+            let xhr_clone = xhr.clone();
+            let link_clone = link.clone();
+            let onload = Closure::wrap(Box::new(move || {
+                let status = xhr_clone.status().unwrap_or_default();
+                if status >= 200 && status < 300 {
+                    link_clone.send_message(CsvDataSourceMsg::UploadResult(Ok(())));
+                } else {
+                    let text = xhr_clone
+                        .response_text()
+                        .ok()
+                        .and_then(|r| r)
+                        .unwrap_or_default();
+                    link_clone.send_message(CsvDataSourceMsg::UploadResult(Err(format!(
+                        "HTTP {}: {}",
+                        status, text
+                    ))));
+                }
+            }) as Box<dyn FnMut()>);
+            xhr.set_onload(Some(onload.as_ref().unchecked_ref()));
+            onload.forget();
+
+            let xhr_err = xhr.clone();
+            let link_err = link.clone();
+            let onerror = Closure::wrap(Box::new(move || {
+                let status = xhr_err.status().unwrap_or_default();
+                link_err.send_message(CsvDataSourceMsg::UploadResult(Err(format!(
+                    "Network error, status {}",
+                    status
+                ))));
+            }) as Box<dyn FnMut()>);
+            xhr.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+            onerror.forget();
+
+            // Send
+            xhr.send_with_opt_form_data(Some(&form)).ok();
+        });
     }
 }
 
@@ -51,6 +111,13 @@ pub enum CsvDataSourceMsg {
     TicketReceived(String),
     StatusUpdated(JobStatus),
     VerifyError(String),
+
+    // UI messages
+    ToggleModal,
+    TriggerFilePicker,
+    FilePicked(File),
+    UploadResult(Result<(), String>),
+    SelectColumn(usize),
 }
 
 impl Component for CsvDataSourceComponent {
@@ -58,7 +125,6 @@ impl Component for CsvDataSourceComponent {
     type Properties = CsvDataSourceProps;
 
     fn create(_ctx: &Context<Self>) -> Self {
-        // Do not start network activity in `create`. Start after first render or on prop change.
         CsvDataSourceComponent {
             is_verifying: false,
             verify_result: None,
@@ -66,10 +132,15 @@ impl Component for CsvDataSourceComponent {
             job_status: None,
             column_checks: None,
             started_for_template: None,
+            show_modal: false,
+            file_input_ref: NodeRef::default(),
+            uploading: false,
+            upload_error: None,
+            selected_column: None,
         }
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             CsvDataSourceMsg::VerifyCompleted(res) => {
                 self.is_verifying = false;
@@ -84,15 +155,10 @@ impl Component for CsvDataSourceComponent {
             CsvDataSourceMsg::StatusUpdated(status) => {
                 self.job_status = Some(status.clone());
                 match status {
-                    JobStatus::Pending => {
-                        self.is_verifying = true;
-                    }
-                    JobStatus::InProgress(_) => {
-                        self.is_verifying = true;
-                    }
+                    JobStatus::Pending => self.is_verifying = true,
+                    JobStatus::InProgress(_) => self.is_verifying = true,
                     JobStatus::Completed(payload) => {
                         self.is_verifying = false;
-                        // Store parsed ColumnCheck vector in component state
                         self.apply_completed(payload);
                     }
                     JobStatus::Failed(err_msg) => {
@@ -107,10 +173,60 @@ impl Component for CsvDataSourceComponent {
                 self.verify_result = Some(Err(e));
                 true
             }
+
+            // UI
+            CsvDataSourceMsg::ToggleModal => {
+                self.show_modal = !self.show_modal;
+                self.upload_error = None;
+                true
+            }
+            CsvDataSourceMsg::TriggerFilePicker => {
+                // trigger the hidden file input
+                if let Some(input) = self.file_input_ref.cast::<HtmlInputElement>() {
+                    input.set_value(""); // clear previous file
+                    input.click();
+                }
+                false
+            }
+            CsvDataSourceMsg::FilePicked(file) => {
+                self.uploading = true;
+                self.upload_error = None;
+                // Kick off upload using current prop template id
+                let link = ctx.link().clone();
+                let tpl = ctx.props().template_id.clone();
+                Self::start_upload(link, tpl, file);
+                true
+            }
+            CsvDataSourceMsg::UploadResult(res) => {
+                self.uploading = false;
+                match res {
+                    Ok(()) => {
+                        self.upload_error = None;
+                        // optionally, close modal or trigger verification start
+                        self.show_modal = false;
+                        // start verification if template_id present
+                        if let Some(id) = ctx.props().template_id.clone() {
+                            // reuse existing logic to start verification
+                            if self.started_for_template.as_deref() != Some(&id) {
+                                self.is_verifying = true;
+                                self.started_for_template = Some(id.clone());
+                                start_verification(ctx.link().clone(), id);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.upload_error = Some(e);
+                    }
+                }
+                true
+            }
+            CsvDataSourceMsg::SelectColumn(idx) => {
+                self.selected_column = Some(idx);
+                true
+            }
         }
     }
 
-    /// Called when properties change; if `template_id` transitions to Some, start the verification.
     fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
         if old_props.template_id != ctx.props().template_id {
             if let Some(id) = ctx.props().template_id.clone() {
@@ -125,12 +241,8 @@ impl Component for CsvDataSourceComponent {
         false
     }
 
-    fn view(&self, _ctx: &Context<Self>) -> Html {
-        // Build a user-facing status label in Spanish per JobStatus:
-        // Pending -> "Verificando CSV..."
-        // InProgress(n) -> "Líneas verificadas: n"
-        // Completed(_) -> "CSV Verificado"
-        // Failed(msg) -> "Error: msg"
+    fn view(&self, ctx: &Context<Self>) -> Html {
+        // Status text (same logic as before)
         let status_text = if let Some(job_status) = &self.job_status {
             match job_status {
                 JobStatus::Pending => "Verificando CSV...".to_string(),
@@ -156,15 +268,88 @@ impl Component for CsvDataSourceComponent {
             "icon-btn"
         };
 
+        // column options from column_checks
+        let column_options = if let Some(cols) = &self.column_checks {
+            html! {
+                <div class="modal-section">
+                    <h3>{"Columnas detectadas"}</h3>
+                    <div class="column-list">
+                        { for cols.iter().enumerate().map(|(i, c)| {
+                            let idx = i;
+                            let title = c.title.clone();
+                            let onclick = ctx.link().callback(move |_| CsvDataSourceMsg::SelectColumn(idx));
+                            html! {
+                                <button class="col-option" {onclick}>{ title }</button>
+                            }
+                        }) }
+                    </div>
+                </div>
+            }
+        } else {
+            html! {}
+        };
+
         html! {
-            <button class={btn_classes} title="CSV data source">
+            <>
+            <button class={btn_classes} title="CSV data source" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
                 <i class="material-icons">{"table_chart"}</i>
                 <span class="icon-label">{status_text}</span>
             </button>
+
+            { if self.show_modal {
+                html! {
+                    <div class="modal-overlay" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
+                        <div class="modal-card" onclick={|e: MouseEvent| e.stop_propagation()}>
+                            <header class="modal-header">
+                                <h2>{"CSV - Opciones"}</h2>
+                                <button class="close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"✕"}</button>
+                            </header>
+
+                            <div class="modal-body">
+                                <section class="modal-section upload-section">
+                                    <h3>{"Subir CSV"}</h3>
+                                    <p class="muted">{"Selecciona un archivo .csv para subir al servidor"}</p>
+                                    <div class="upload-actions">
+                                        <button class="primary upload-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::TriggerFilePicker)}>
+                                            <i class="material-icons">{"file_upload"}</i>
+                                            { if self.uploading { " Subiendo..." } else { " Subir archivo" } }
+                                        </button>
+                                        <input ref={self.file_input_ref.clone()}
+                                            type="file"
+                                            accept=".csv"
+                                            style="display:none"
+                                            onchange={ctx.link().callback(|event: Event| {
+                                                let input: HtmlInputElement = event.target().unwrap().dyn_into().unwrap();
+                                                if let Some(list) = input.files() {
+                                                    if let Some(file) = list.get(0) {
+                                                        return CsvDataSourceMsg::FilePicked(file);
+                                                    }
+                                                }
+                                                CsvDataSourceMsg::UploadResult(Err("No file selected".into()))
+                                            })}
+                                        />
+                                        { if let Some(err) = &self.upload_error {
+                                            html! { <p class="error">{ err }</p> }
+                                        } else { html!{} } }
+                                    </div>
+                                </section>
+
+                                { column_options }
+                            </div>
+
+                            <footer class="modal-footer">
+                                <button class="secondary" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"Cerrar"}</button>
+                            </footer>
+                        </div>
+                    </div>
+                }
+            } else {
+                html! {}
+            } }
+            </>
         }
     }
 
-    /// Called after render; kick off verification if it's the first render and `template_id` is Some.
     fn rendered(&mut self, ctx: &Context<Self>, first_render: bool) {
         if first_render {
             if let Some(id) = ctx.props().template_id.clone() {
@@ -178,13 +363,12 @@ impl Component for CsvDataSourceComponent {
     }
 }
 
-/// Start the POST request that returns a ticket and begin polling the job status.
-/// This function runs asynchronously and communicates results back to the component via `link`.
-fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: String) {
+// start_verification and helpers remain mostly the same as before:
+fn start_verification(link: yew::html::Scope<CsvDataSourceComponent>, template_id: String) {
     spawn_local(async move {
         let url = "/api/data_sources/csv/verify";
         let body = serde_json::json!({ "uuid": template_id }).to_string();
-        match Request::post(url)
+        match gloo_net::http::Request::post(&url)
             .header("Content-Type", "application/json")
             .body(body)
             .unwrap()
@@ -195,11 +379,9 @@ fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: St
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 if status == 200 {
-                    // Since the API returns plain text with the ticket UUID, prefer the simple extractor:
                     let ticket = match extract_ticket_from_text(&text) {
                         Some(t) => t,
                         None => {
-                            // Notify component of error and stop
                             link.send_message(CsvDataSourceMsg::VerifyCompleted(Err(
                                 "Empty ticket returned from verify endpoint".to_string(),
                             )));
@@ -208,21 +390,19 @@ fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: St
                     };
                     link.send_message(CsvDataSourceMsg::TicketReceived(ticket.clone()));
 
-                    // Start polling job status periodically
                     let poll_link = link.clone();
                     spawn_local(async move {
                         let mut finished = false;
                         while !finished {
                             sleep(Duration::from_secs(1)).await;
                             let status_url = format!("/api/data_sources/csv/status/{}", ticket);
-                            match Request::get(&status_url).send().await {
+                            match gloo_net::http::Request::get(&status_url).send().await {
                                 Ok(resp) => {
                                     if let Ok(body_text) = resp.text().await {
                                         if let Some(json_val) =
                                             serde_json::from_str::<Value>(&body_text).ok()
                                         {
                                             if let Some(job_status) = parse_job_status(&json_val) {
-                                                // Notify status to component
                                                 poll_link.send_message(
                                                     CsvDataSourceMsg::StatusUpdated(
                                                         job_status.clone(),
@@ -230,13 +410,10 @@ fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: St
                                                 );
                                                 match job_status {
                                                     JobStatus::Completed(_)
-                                                    | JobStatus::Failed(_) => {
-                                                        finished = true;
-                                                    }
+                                                    | JobStatus::Failed(_) => finished = true,
                                                     _ => {}
                                                 }
                                             } else {
-                                                // Could not parse job status: send error and stop polling
                                                 poll_link.send_message(
                                                     CsvDataSourceMsg::VerifyError(
                                                         "Could not parse job status".into(),
@@ -279,7 +456,6 @@ fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: St
     });
 }
 
-/// Extract ticket UUID from plain text response (trimmed). Returns `None` if empty.
 fn extract_ticket_from_text(text: &str) -> Option<String> {
     let s = text.trim();
     if s.is_empty() {
@@ -289,7 +465,6 @@ fn extract_ticket_from_text(text: &str) -> Option<String> {
     }
 }
 
-/// Parse job status via direct deserialization into JobStatus.
 fn parse_job_status(v: &Value) -> Option<JobStatus> {
     serde_json::from_value(v.clone()).ok()
 }
