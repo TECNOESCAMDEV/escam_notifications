@@ -172,8 +172,17 @@ fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: St
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 if status == 200 {
-                    // Try to extract a ticket from JSON or plain text
-                    let ticket = extract_ticket_from_text(&text).unwrap_or_else(|| text.clone());
+                    // Since the API returns plain text with the ticket UUID, prefer the simple extractor:
+                    let ticket = match extract_ticket_from_text(&text) {
+                        Some(t) => t,
+                        None => {
+                            // Notify component of error and stop
+                            link.send_message(CsvDataSourceMsg::VerifyCompleted(Err(
+                                "Empty ticket returned from verify endpoint".to_string(),
+                            )));
+                            return;
+                        }
+                    };
                     link.send_message(CsvDataSourceMsg::TicketReceived(ticket.clone()));
 
                     // Start polling job status periodically
@@ -247,21 +256,14 @@ fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: St
     });
 }
 
-/// Try to extract a ticket UUID from a text that may be JSON with `ticket` or `uuid` fields,
-/// or a raw JSON string literal.
+/// Extract ticket UUID from plain text response (trimmed). Returns `None` if empty.
 fn extract_ticket_from_text(text: &str) -> Option<String> {
-    if let Ok(v) = serde_json::from_str::<Value>(text) {
-        if let Some(t) = v.get("ticket").and_then(|t| t.as_str()) {
-            return Some(t.to_string());
-        }
-        if let Some(t) = v.get("uuid").and_then(|t| t.as_str()) {
-            return Some(t.to_string());
-        }
-        if v.is_string() {
-            return v.as_str().map(|s| s.to_string());
-        }
+    let s = text.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
     }
-    None
 }
 
 /// Parse job status flexibly from JSON `Value`.
@@ -270,67 +272,5 @@ fn extract_ticket_from_text(text: &str) -> Option<String> {
 /// - or object with `{ "status": "...", "data": ... }`
 /// - or a simple string like `"Pending"`.
 fn parse_job_status(v: &Value) -> Option<JobStatus> {
-    match v {
-        Value::String(s) => match s.as_str() {
-            "Pending" => Some(JobStatus::Pending),
-            other => {
-                // If string contains serialized payload, treat as Completed
-                if other.starts_with('{') || other.starts_with('[') {
-                    Some(JobStatus::Completed(other.to_string()))
-                } else {
-                    None
-                }
-            }
-        },
-        Value::Object(map) => {
-            if map.len() == 1 {
-                let (k, val) = map.iter().next().unwrap();
-                match k.as_str() {
-                    "Pending" => Some(JobStatus::Pending),
-                    "InProgress" => val.as_u64().map(|n| JobStatus::InProgress(n as u32)),
-                    "Completed" => {
-                        if val.is_string() {
-                            val.as_str().map(|s| JobStatus::Completed(s.to_string()))
-                        } else {
-                            serde_json::to_string(val).ok().map(JobStatus::Completed)
-                        }
-                    }
-                    "Failed" => {
-                        if val.is_string() {
-                            val.as_str().map(|s| JobStatus::Failed(s.to_string()))
-                        } else {
-                            serde_json::to_string(val).ok().map(JobStatus::Failed)
-                        }
-                    }
-                    _ => None,
-                }
-            } else {
-                // Alternative shape: { "status": "Pending", "data": ... }
-                if let Some(status) = map.get("status").and_then(|s| s.as_str()) {
-                    match status {
-                        "Pending" => Some(JobStatus::Pending),
-                        "InProgress" => map
-                            .get("data")
-                            .and_then(|d| d.as_u64())
-                            .map(|n| JobStatus::InProgress(n as u32)),
-                        "Completed" => {
-                            if let Some(d) = map.get("data") {
-                                serde_json::to_string(d).ok().map(JobStatus::Completed)
-                            } else {
-                                None
-                            }
-                        }
-                        "Failed" => map
-                            .get("data")
-                            .and_then(|d| d.as_str())
-                            .map(|s| JobStatus::Failed(s.to_string())),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }
-        }
-        _ => None,
-    }
+    serde_json::from_value(v.clone()).ok()
 }
