@@ -133,8 +133,14 @@ impl Component for CsvDataSourceComponent {
             "CSV"
         };
 
+        let btn_classes = if status_text.len() > 30 {
+            "icon-btn limited"
+        } else {
+            "icon-btn"
+        };
+
         html! {
-            <button class="icon-btn" title="CSV data source">
+            <button class={btn_classes} title="CSV data source">
                 <i class="material-icons">{"table_chart"}</i>
                 <span class="icon-label">{status_text}</span>
             </button>
