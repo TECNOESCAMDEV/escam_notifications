@@ -1,6 +1,5 @@
 use common::jobs::JobStatus;
 use common::model::csv::ColumnCheck;
-use gloo_console::console_dbg;
 use gloo_net::http::Request;
 use gloo_timers::future::sleep;
 use num_format::{Locale, ToFormattedString};
@@ -30,7 +29,6 @@ impl CsvDataSourceComponent {
     fn apply_completed(&mut self, payload: String) {
         match serde_json::from_str::<Vec<ColumnCheck>>(&payload) {
             Ok(cols) => {
-                console_dbg!("Parsed ColumnChecks:", &cols);
                 self.column_checks = Some(cols);
                 self.verify_result = Some(Ok(true));
             }
