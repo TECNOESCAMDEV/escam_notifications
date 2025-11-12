@@ -245,13 +245,10 @@ fn handle_first_invalid_sync(
 /// Returns `Ok(true)` if an invalid row was found and handled (a `JobUpdate::Failed` has been sent),
 /// or `Ok(false)` if the chunk passed validation. Errors are returned as `Err(String)`.
 fn process_chunk_sync(
-    _tx: &mpsc::Sender<JobUpdate>,
-    _job_id: &str,
     chunk: &[(usize, String)],
     columns: &[ColumnCheck],
     title_to_index: &HashMap<String, usize>,
     delimiter: char,
-    _start: Instant,
 ) -> Result<Option<(usize, String, String)>, String> {
     Ok(find_first_invalid(
         chunk,
@@ -587,7 +584,7 @@ fn process_and_handle_chunk(
     last_verified_md5: &str,
 ) -> Result<(), String> {
     if let Some((row, title, reason)) =
-        process_chunk_sync(tx, job_id, chunk, columns, title_to_index, delimiter, start)?
+        process_chunk_sync(chunk, columns, title_to_index, delimiter)?
     {
         // Notify to the job controller about the first invalid row
         handle_first_invalid_sync(tx, job_id, row, &title, &reason, start)?;
