@@ -275,12 +275,19 @@ impl Component for CsvDataSourceComponent {
                     <div class="column-list">
                         { for cols.iter().enumerate().map(|(i, c)| {
                             let idx = i;
-                            let title = c.title.clone();
+                            let label = c.title.clone();
+                            let tooltip = format!("Pulsa para insertar '{}' en la plantilla", label.clone());
                             let onclick = ctx.link().callback(move |_| CsvDataSourceMsg::SelectColumn(idx));
                             html! {
-                                <button class="col-option" {onclick}>{ title }</button>
+                                <button
+                                    class="col-option"
+                                    {onclick}
+                                    title={tooltip}
+                                    aria-label={format!("Insertar columna {}", label.clone())}>
+                                    { label }
+                                </button>
                             }
-                        }) }
+                        })}
                     </div>
                 </div>
             }
