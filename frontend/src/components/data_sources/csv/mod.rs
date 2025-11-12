@@ -2,6 +2,7 @@ use common::jobs::JobStatus;
 use common::model::csv::ColumnCheck;
 use gloo_net::http::Request;
 use gloo_timers::future::sleep;
+use num_format::{Locale, ToFormattedString};
 use serde_json::Value;
 use std::time::Duration;
 use wasm_bindgen_futures::spawn_local;
@@ -118,19 +119,26 @@ impl Component for CsvDataSourceComponent {
     }
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
-        // Build a user-facing status label in English
-        let status_text = if self.is_verifying {
-            "Verifying..."
+        // Build a user-facing status label in Spanish per JobStatus:
+        // Pending -> "Verificando"
+        // InProgress(n) -> "Verificando: n"
+        // Completed(_) -> "Verified"
+        // Failed(msg) -> "Failed: msg"
+        let status_text = if let Some(job_status) = &self.job_status {
+            match job_status {
+                JobStatus::Pending => "Verificando".to_string(),
+                JobStatus::InProgress(n) => format!("Líneas verificadas: {}", n.to_formatted_string(&Locale::es)),
+                JobStatus::Completed(_) => "CSV Verificado".to_string(),
+                JobStatus::Failed(msg) => format!("Failed: {}", msg),
+            }
+        } else if self.is_verifying {
+            "Verificando".to_string()
         } else if let Some(Ok(true)) = &self.verify_result {
-            "Verified"
+            "Verified".to_string()
         } else if let Some(Err(e)) = &self.verify_result {
-            &format!("Error: {}", e)
-        } else if let Some(JobStatus::InProgress(n)) = &self.job_status {
-            &format!("Processing {} lines...", n)
-        } else if let Some(JobStatus::Pending) = &self.job_status {
-            "Pending..."
+            format!("Failed: {}", e)
         } else {
-            "CSV"
+            "CSV".to_string()
         };
 
         let btn_classes = if status_text.len() > 30 {
@@ -272,11 +280,7 @@ fn extract_ticket_from_text(text: &str) -> Option<String> {
     }
 }
 
-/// Parse job status flexibly from JSON `Value`.
-/// Supports common Rust enum serializations:
-/// - single-key object like `{ "Pending": {} }`, `{ "InProgress": 123 }`, `{ "Completed": "..." }`
-/// - or object with `{ "status": "...", "data": ... }`
-/// - or a simple string like `"Pending"`.
+/// Parse job status via direct deserialization into JobStatus.
 fn parse_job_status(v: &Value) -> Option<JobStatus> {
     serde_json::from_value(v.clone()).ok()
 }
