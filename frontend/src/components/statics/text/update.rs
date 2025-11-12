@@ -13,7 +13,6 @@
 //! - Deleting images, which removes both the asset and its inline tag.
 //! - Persisting the template via a backend POST, with user-facing toast messages (Spanish).
 use base64::{engine::general_purpose, Engine as _};
-use gloo_console::console_dbg;
 use gloo_file::{futures::read_as_bytes, Blob};
 use gloo_net::http::Request;
 use wasm_bindgen::JsCast;
@@ -146,10 +145,7 @@ pub fn update(
                     images: None,
                 });
             }
-            console_dbg!(
-                "Template json after AutoResize:",
-                serde_json::to_string(&component.template).unwrap_or_default()
-            );
+
             false
         }
         Msg::OpenFileDialog => {

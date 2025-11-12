@@ -1,5 +1,6 @@
 use common::jobs::JobStatus;
 use common::model::csv::ColumnCheck;
+use gloo_console::console_dbg;
 use gloo_net::http::Request;
 use gloo_timers::future::sleep;
 use num_format::{Locale, ToFormattedString};
@@ -22,6 +23,23 @@ pub struct CsvDataSourceComponent {
     column_checks: Option<Vec<ColumnCheck>>,
     /// Template id for which verification has already been started (prevent duplicates).
     started_for_template: Option<String>,
+}
+
+impl CsvDataSourceComponent {
+    /// Parse completed payload and store ColumnCheck vector in component state.
+    fn apply_completed(&mut self, payload: String) {
+        match serde_json::from_str::<Vec<ColumnCheck>>(&payload) {
+            Ok(cols) => {
+                console_dbg!("Parsed ColumnChecks:", &cols);
+                self.column_checks = Some(cols);
+                self.verify_result = Some(Ok(true));
+            }
+            Err(e) => {
+                self.column_checks = None;
+                self.verify_result = Some(Err(format!("Deserialize ColumnCheck: {}", e)));
+            }
+        }
+    }
 }
 
 #[derive(Properties, PartialEq)]
@@ -76,17 +94,8 @@ impl Component for CsvDataSourceComponent {
                     }
                     JobStatus::Completed(payload) => {
                         self.is_verifying = false;
-                        // Payload contains a JSON string representing Vec<ColumnCheck>
-                        match serde_json::from_str::<Vec<ColumnCheck>>(&payload) {
-                            Ok(cols) => {
-                                self.column_checks = Some(cols);
-                                self.verify_result = Some(Ok(true));
-                            }
-                            Err(e) => {
-                                self.verify_result =
-                                    Some(Err(format!("Deserialize ColumnCheck: {}", e)));
-                            }
-                        }
+                        // Store parsed ColumnCheck vector in component state
+                        self.apply_completed(payload);
                     }
                     JobStatus::Failed(err_msg) => {
                         self.is_verifying = false;
@@ -127,7 +136,9 @@ impl Component for CsvDataSourceComponent {
         let status_text = if let Some(job_status) = &self.job_status {
             match job_status {
                 JobStatus::Pending => "Verificando CSV...".to_string(),
-                JobStatus::InProgress(n) => format!("Líneas verificadas: {}", n.to_formatted_string(&Locale::es)),
+                JobStatus::InProgress(n) => {
+                    format!("Líneas verificadas: {}", n.to_formatted_string(&Locale::es))
+                }
                 JobStatus::Completed(_) => "CSV Verificado".to_string(),
                 JobStatus::Failed(msg) => format!("Error: {}", msg),
             }
