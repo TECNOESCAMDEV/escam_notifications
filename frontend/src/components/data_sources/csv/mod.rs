@@ -399,7 +399,6 @@ impl Component for CsvDataSourceComponent {
     }
 }
 
-// start_verification and helpers remain mostly the same as before:
 fn start_verification(link: html::Scope<CsvDataSourceComponent>, template_id: String) {
     spawn_local(async move {
         let url = "/api/data_sources/csv/verify";
