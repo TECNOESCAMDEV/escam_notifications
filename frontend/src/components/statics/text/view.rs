@@ -187,9 +187,9 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
     }
 
     // Replace CSV placeholders of the form [ph:TITLE:BASE64]
-    // English: find placeholders, decode base64, try to unwrap JSON string values
+    // find placeholders, decode base64, try to unwrap JSON string values
     // so they don't render wrapped in quotes, then escape and inject a span.
-    let ph_re = Regex::new(r"\[ph:(.+?):([A-Za-z0-9+/=]+)\]").unwrap();
+    let ph_re = Regex::new(r"\[ph:(.+?):([A-Za-z0-9+/=]+)]").unwrap();
     let mut result = String::with_capacity(html_with_images.len());
     let mut last = 0usize;
     for cap in ph_re.captures_iter(&html_with_images) {
