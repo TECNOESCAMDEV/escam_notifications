@@ -6,4 +6,5 @@ use serde::{Deserialize, Serialize};
 pub struct ColumnCheck {
     pub title: String,
     pub placeholder_type: PlaceholderType,
+    pub first_row: Option<String>,
 }

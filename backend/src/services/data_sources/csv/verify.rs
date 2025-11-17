@@ -152,6 +152,7 @@ fn validate_and_normalize_titles(
 /// - Number if parsable as `f64`
 /// - Otherwise `Text`
 ///
+/// Now also captures the `first_row` value (normalized) for each column.
 /// Returns a vector of `ColumnCheck` aligned with `titles`.
 fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) -> Vec<ColumnCheck> {
     let cells: Vec<String> = second_line
@@ -163,9 +164,9 @@ fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) ->
     let mut columns = Vec::with_capacity(titles.len());
 
     for (idx, title) in titles.iter().enumerate() {
-        let placeholder_type = if idx < cells.len() {
+        let (placeholder_type, first_row) = if idx < cells.len() {
             let val = cells[idx].trim();
-            if val.contains('@') && val.contains('.') {
+            let placeholder_type = if val.contains('@') && val.contains('.') {
                 PlaceholderType::Email
             } else if val.chars().any(|ch| currency_symbols.contains(&ch)) {
                 PlaceholderType::Currency
@@ -173,14 +174,16 @@ fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) ->
                 PlaceholderType::Number
             } else {
                 PlaceholderType::Text
-            }
+            };
+            (placeholder_type, Some(cells[idx].clone()))
         } else {
-            PlaceholderType::Text
+            (PlaceholderType::Text, None)
         };
 
         columns.push(ColumnCheck {
             title: title.clone(),
             placeholder_type,
+            first_row,
         });
     }
 
