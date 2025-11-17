@@ -1,7 +1,5 @@
-// File: frontend/src/components/data_sources/csv/mod.rs
 use common::jobs::JobStatus;
 use common::model::csv::ColumnCheck;
-use gloo_console::console_dbg;
 use gloo_timers::future::sleep;
 use num_format::{Locale, ToFormattedString};
 use serde_json::Value;
@@ -233,11 +231,12 @@ impl Component for CsvDataSourceComponent {
                 if let Some(cb) = &ctx.props().on_column_selected {
                     if let Some(cols) = &self.column_checks {
                         if let Some(col) = cols.get(idx) {
-                            console_dbg!("Emitting column:", &col);
                             cb.emit(col.clone());
                         }
                     }
                 }
+                // Close modal after double-click selection
+                self.show_modal = false;
                 true
             }
         }
