@@ -17,6 +17,8 @@
 //! - `Save`: Persist the current template to the backend.
 //! - `SetTemplate(Option<Template>)`: Replace the in-memory template (load or reset).
 
+use common::model::csv::ColumnCheck;
+
 #[derive(Clone)]
 pub enum Msg {
     SetTab(String),
@@ -32,4 +34,5 @@ pub enum Msg {
     DeleteImage(String),
     Save,
     SetTemplate(Option<common::model::template::Template>),
+    InsertCsvColumnPlaceholder(ColumnCheck),
 }

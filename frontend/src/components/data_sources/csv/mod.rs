@@ -1,5 +1,7 @@
+// File: frontend/src/components/data_sources/csv/mod.rs
 use common::jobs::JobStatus;
 use common::model::csv::ColumnCheck;
+use gloo_console::console_dbg;
 use gloo_timers::future::sleep;
 use num_format::{Locale, ToFormattedString};
 use serde_json::Value;
@@ -8,7 +10,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Event, File, HtmlInputElement};
-use yew::{html, Component, Context, Html, MouseEvent, NodeRef, Properties};
+use yew::{html, Callback, Component, Context, Html, MouseEvent, NodeRef, Properties};
 
 /// Component that triggers a CSV verification job, polls status and provides upload + modal UI.
 pub struct CsvDataSourceComponent {
@@ -104,6 +106,8 @@ impl CsvDataSourceComponent {
 pub struct CsvDataSourceProps {
     #[prop_or_default]
     pub template_id: Option<String>,
+    #[prop_or_default]
+    pub on_column_selected: Option<Callback<ColumnCheck>>,
 }
 
 pub enum CsvDataSourceMsg {
@@ -118,6 +122,7 @@ pub enum CsvDataSourceMsg {
     FilePicked(File),
     UploadResult(Result<(), String>),
     SelectColumn(usize),
+    DoubleClickColumn(usize),
 }
 
 impl Component for CsvDataSourceComponent {
@@ -223,6 +228,18 @@ impl Component for CsvDataSourceComponent {
                 self.selected_column = Some(idx);
                 true
             }
+            CsvDataSourceMsg::DoubleClickColumn(idx) => {
+                self.selected_column = Some(idx);
+                if let Some(cb) = &ctx.props().on_column_selected {
+                    if let Some(cols) = &self.column_checks {
+                        if let Some(col) = cols.get(idx) {
+                            console_dbg!("Emitting column:", &col);
+                            cb.emit(col.clone());
+                        }
+                    }
+                }
+                true
+            }
         }
     }
 
@@ -290,10 +307,12 @@ impl Component for CsvDataSourceComponent {
                             let label = c.title.clone();
                             let tooltip = format!("Pulsa para insertar '{}' en la plantilla", label.clone());
                             let onclick = ctx.link().callback(move |_| CsvDataSourceMsg::SelectColumn(idx));
+                            let ondblclick = ctx.link().callback(move |_| CsvDataSourceMsg::DoubleClickColumn(idx));
                             html! {
                                 <button
                                     class="col-option"
                                     {onclick}
+                                    ondblclick={ondblclick}
                                     title={tooltip}
                                     aria-label={format!("Insertar columna {}", label.clone())}>
                                     { label }
@@ -310,7 +329,7 @@ impl Component for CsvDataSourceComponent {
         // Upload button state
         let upload_disabled = self.uploading;
         let upload_onclick = if upload_disabled {
-            yew::Callback::<MouseEvent>::noop()
+            Callback::<MouseEvent>::noop()
         } else {
             ctx.link().callback(|_| CsvDataSourceMsg::TriggerFilePicker)
         };

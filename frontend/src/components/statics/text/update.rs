@@ -277,5 +277,47 @@ pub fn update(
             component.template = template_opt;
             true
         }
+        Msg::InsertCsvColumnPlaceholder(col_check) => {
+            // Build placeholder: [ph:{title}:{first_row_base_64}]
+            let title_safe = col_check.title.replace(':', "_");
+            let first_row_json = serde_json::to_string(&col_check.first_row).unwrap_or_default();
+            let first_row_b64 = general_purpose::STANDARD.encode(first_row_json.as_bytes());
+            let placeholder = format!("[ph:{}:{}]", title_safe, first_row_b64);
+
+            // Try to insert at current cursor position
+            if let Some(textarea) = component.textarea_ref.cast::<HtmlTextAreaElement>() {
+                let current_value = textarea.value();
+                let start = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                let end = textarea.selection_end().unwrap_or(Some(start as u32)).unwrap_or(start as u32) as usize;
+
+                // Avoid out-of-bounds
+                let start = start.min(current_value.len());
+                let end = end.min(current_value.len());
+
+                let mut new_text = String::with_capacity(current_value.len() + placeholder.len());
+                new_text.push_str(&current_value[..start]);
+                new_text.push_str(&placeholder);
+                new_text.push_str(&current_value[end..]);
+
+                // Update the state and textarea value
+                component.text = new_text.clone();
+                textarea.set_value(&new_text);
+
+                // Mover cursor al final del placeholder
+                let new_pos = (start + placeholder.len()) as u32;
+                textarea.set_selection_start(Some(new_pos)).ok();
+                textarea.set_selection_end(Some(new_pos)).ok();
+                textarea.focus().ok();
+            } else {
+                // Fallback: at the end of the text if textarea not found
+                if !component.text.is_empty() {
+                    component.text.push(' ');
+                }
+                component.text.push_str(&placeholder);
+            }
+
+            // Force re-render to reflect changes
+            true
+        }
     }
 }
