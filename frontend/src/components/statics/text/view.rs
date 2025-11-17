@@ -176,18 +176,11 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
                         };
                         let title_esc = escape_html(title);
                         let decoded_esc = escape_html(&unquoted);
-                        format!(
-                            r#"<span class="ph-placeholder" title="{}">{}</span>"#,
-                            title_esc, decoded_esc
-                        )
+                        format!(r#"<span title="{}">{}</span>"#, title_esc, decoded_esc)
                     }
-                    Err(_) => {
-                        r#"<span class="ph-placeholder error">[invalid utf8]</span>"#.to_string()
-                    }
+                    Err(_) => r#"<span>[invalid utf8]</span>"#.to_string(),
                 },
-                Err(_) => {
-                    r#"<span class="ph-placeholder error">[invalid base64]</span>"#.to_string()
-                }
+                Err(_) => r#"<span>[invalid base64]</span>"#.to_string(),
             };
 
             // Generate a safe alphanumeric token using a UUID (no dashes)
