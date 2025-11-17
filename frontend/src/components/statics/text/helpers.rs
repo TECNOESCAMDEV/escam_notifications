@@ -122,3 +122,15 @@ pub fn create_empty_template() -> common::model::template::Template {
         images: None,
     }
 }
+
+
+/// Helper to escape HTML special characters to avoid XSS when injecting decoded content.
+/// This is a simple replacer for the common characters.
+pub fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}

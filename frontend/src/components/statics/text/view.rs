@@ -10,11 +10,14 @@
 //! - The preview pipeline performs a whitespace-preserving trick: runs of multiple
 //!   newlines are temporarily replaced, parsed by `pulldown_cmark`, then expanded
 //!   into repeated `<br>` tags to emulate a loose paragraph style.
-use super::helpers::get_img_tag_id_at_cursor;
+
+use super::helpers::{escape_html, get_img_tag_id_at_cursor};
 use super::messages::Msg;
 use super::state::StaticTextComponent;
 use crate::components::data_sources::csv::CsvDataSourceComponent;
 use crate::components::statics::text::dialogs::image::image_dialog;
+use base64::engine::general_purpose;
+use base64::Engine;
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
 use wasm_bindgen::JsCast;
@@ -149,6 +152,7 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
 /// 3. Parse the marked text with `pulldown_cmark` to HTML.
 /// 4. Expand markers back into repeated `<br>` tags.
 /// 5. Replace `[img:<id>]` placeholders with `<img src="data:...">` for template images.
+/// 6. Replace `[ph:TITLE:BASE64]` placeholders by decoding BASE64 and inserting an escaped span.
 fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
     let text_with_spaces = component.text.replace("\n", " \n");
 
@@ -181,5 +185,47 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
             }
         }
     }
-    AttrValue::from(html_with_images)
+
+    // Replace CSV placeholders of the form [ph:TITLE:BASE64]
+    // English: find placeholders, decode base64, try to unwrap JSON string values
+    // so they don't render wrapped in quotes, then escape and inject a span.
+    let ph_re = Regex::new(r"\[ph:(.+?):([A-Za-z0-9+/=]+)\]").unwrap();
+    let mut result = String::with_capacity(html_with_images.len());
+    let mut last = 0usize;
+    for cap in ph_re.captures_iter(&html_with_images) {
+        let m = cap.get(0).unwrap();
+        // append text before this match
+        result.push_str(&html_with_images[last..m.start()]);
+
+        let title = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let b64 = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+
+        let replacement = match general_purpose::STANDARD.decode(b64) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(decoded) => {
+                    // If decoded is a JSON string literal (e.g. "\"value\""), unwrap it
+                    let unquoted = match serde_json::from_str::<serde_json::Value>(&decoded) {
+                        Ok(serde_json::Value::String(s)) => s,
+                        _ => decoded,
+                    };
+                    // escape both title and decoded content to be safe
+                    let title_esc = escape_html(title);
+                    let decoded_esc = escape_html(&unquoted);
+                    format!(
+                        r#"<span class="ph-placeholder" title="{}">{}</span>"#,
+                        title_esc, decoded_esc
+                    )
+                }
+                Err(_) => r#"<span class="ph-placeholder error">[invalid utf8]</span>"#.to_string(),
+            },
+            Err(_) => r#"<span class="ph-placeholder error">[invalid base64]</span>"#.to_string(),
+        };
+
+        result.push_str(&replacement);
+        last = m.end();
+    }
+    // append remaining tail
+    result.push_str(&html_with_images[last..]);
+
+    AttrValue::from(result)
 }
