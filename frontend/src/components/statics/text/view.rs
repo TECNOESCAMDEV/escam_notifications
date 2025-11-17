@@ -94,6 +94,25 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
                                         let text = textarea.value();
                                         let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
                                         let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+
+                                        // Check if cursor is inside a [ph:...] placeholder
+                                        if let Some((start, end)) = get_ph_bounds_at_cursor(&text, cursor_pos) {
+                                            // If it's the Delete key, remove the whole placeholder
+                                            if e.key() == "Delete" {
+                                                e.prevent_default();
+                                                let mut new_text = String::with_capacity(text.len());
+                                                new_text.push_str(&text[..start]);
+                                                new_text.push_str(&text[end..]);
+                                                return vec![ Msg::UpdateText(new_text), Msg::AutoResize ];
+                                            } else if !arrow_keys.contains(&e.key().as_str()) {
+                                                // Block any other key (including typing, backspace, etc.)
+                                                e.prevent_default();
+                                                return vec![];
+                                            }
+                                        }
+
+                                        // Existing image-tag protection logic
+                                        let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
                                         if get_img_tag_id_at_cursor(&text, cursor_pos).is_some() && !arrow_keys.contains(&e.key().as_str()) {
                                             e.prevent_default();
                                             vec![]
@@ -142,6 +161,24 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
             <span class="icon-label">{label}</span>
         </button>
     }
+}
+
+/// Return `(start, end)` byte indexes of a `[ph:...:BASE64]` placeholder that
+/// contains `cursor_pos`, or `None` if cursor is outside.
+fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usize)> {
+    let pos = cursor_pos.min(text.len());
+    // Search backwards for the last "[ph:" before or at cursor
+    if let Some(start) = text[..pos].rfind("[ph:") {
+        // Find the next closing bracket after start
+        if let Some(rel_end) = text[start..].find(']') {
+            let end = start + rel_end + 1; // make end exclusive
+            // Ensure cursor is actually inside the found span
+            if pos >= start && pos <= end {
+                return Some((start, end));
+            }
+        }
+    }
+    None
 }
 
 /// Produces the HTML used by the preview tab.
