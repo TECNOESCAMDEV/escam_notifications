@@ -195,10 +195,17 @@ fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usiz
 /// 5. Replace `[img:<id>]` placeholders with `<img src="data:...">` for template images.
 /// 6. Replace `[ph:TITLE:BASE64]` placeholders by decoding BASE64 and inserting an escaped span.
 fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
-    // Preserve single-newline spacing trick
-    let text_with_spaces = component.text.replace("\n", " \n");
+    // Normalize line endings and remove invisible characters at the start
+    let text = component.text.clone();
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let text = text
+        .trim_start_matches(|c: char| c == '\u{feff}' || c == '\u{200b}')
+        .to_string();
 
-    // Use a stricter regex and generate alphanumeric-only tokens using UUIDs
+    // Preserve single-newline spacing trick
+    let text_with_spaces = text.replace("\n", " \n");
+
+    // Placeholder regex y vector de reemplazos
     let ph_re = Regex::new(r"\[ph:([^:\]]+):([A-Za-z0-9+/=]+)]").unwrap();
     let mut replacements: Vec<(String, String)> = Vec::new();
 
@@ -207,7 +214,6 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
             let title = caps.get(1).map(|m| m.as_str()).unwrap_or("");
             let b64 = caps.get(2).map(|m| m.as_str()).unwrap_or("");
 
-            // Build the safe span HTML (escaped content)
             let replacement_html = match general_purpose::STANDARD.decode(b64) {
                 Ok(bytes) => match String::from_utf8(bytes) {
                     Ok(decoded) => {
@@ -224,28 +230,29 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
                 Err(_) => r#"<span>[invalid base64]</span>"#.to_string(),
             };
 
-            // Generate a safe alphanumeric token using a UUID (no dashes)
             let uuid = uuid::Uuid::new_v4().simple().to_string();
-            let token = format!("PH{}", uuid); // e.g. PHa1b2c3...
+            let token = format!("PH{}", uuid);
             replacements.push((token.clone(), replacement_html));
             token
         })
         .into_owned();
 
-    // Compress multiple newlines into temporary markers
+    // Compress multiple newlines into a unique marker, with line breaks around
     let re = Regex::new(r"(\n\s*){2,}").unwrap();
-    let marked_text = re.replace_all(&text_with_tokens, |caps: &regex::Captures| {
-        let count = caps[0].matches('\n').count();
-        format!("br{}", count)
-    });
+    let marked_text = re
+        .replace_all(&text_with_tokens, |caps: &regex::Captures| {
+            let count = caps[0].matches('\n').count();
+            format!("\nBR_MARKER{}\n", count)
+        })
+        .into_owned();
 
-    // Parse markdown normally
+    // Parse markdown
     let parser = Parser::new(&marked_text);
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
 
-    // Expand temporary br markers back into repeated <br> tags
-    let re_br = Regex::new(r"br(\d+)").unwrap();
+    // Expand BR_MARKER{N} markers into repeated <br> tags
+    let re_br = Regex::new(r"BR_MARKER(\d+)").unwrap();
     let mut final_html = re_br
         .replace_all(&html_output, |caps: &regex::Captures| {
             let n = caps[1].parse::<usize>().unwrap_or(1);
@@ -253,12 +260,12 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
         })
         .into_owned();
 
-    // Replace tokens with their corresponding safe span HTML
+    // Replace PH... tokens with their safe HTML
     for (token, html_snippet) in &replacements {
         final_html = final_html.replace(token, html_snippet);
     }
 
-    // Resolve inline images `[img:<id>]` into real <img> tags
+    // Inline image resolver `[img:<id>]`
     if let Some(template) = &component.template {
         if let Some(images) = &template.images {
             for image in images {
