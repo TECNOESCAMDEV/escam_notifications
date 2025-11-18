@@ -25,6 +25,9 @@ pub struct CsvDataSourceComponent {
     uploading: bool,
     upload_error: Option<String>,
     selected_column: Option<usize>,
+
+    // Show a confirmation dialog before starting the file picker/upload
+    show_confirm_upload: bool,
 }
 
 impl CsvDataSourceComponent {
@@ -123,6 +126,10 @@ pub enum CsvDataSourceMsg {
     UploadResult(Result<(), String>),
     SelectColumn(usize),
     DoubleClickColumn(usize),
+
+    // Confirmation dialog actions
+    AcceptUploadWarning,
+    RejectUploadWarning,
 }
 
 impl Component for CsvDataSourceComponent {
@@ -142,6 +149,7 @@ impl Component for CsvDataSourceComponent {
             uploading: false,
             upload_error: None,
             selected_column: None,
+            show_confirm_upload: false,
         }
     }
 
@@ -193,12 +201,24 @@ impl Component for CsvDataSourceComponent {
                 true
             }
             CsvDataSourceMsg::TriggerFilePicker => {
-                // trigger the hidden file input
+                // Show a strong warning before proceeding with selecting/uploading a new CSV.
+                // The user must explicitly accept to continue.
+                self.show_confirm_upload = true;
+                true
+            }
+            CsvDataSourceMsg::AcceptUploadWarning => {
+                // User accepted the warning: hide dialog and trigger file input click
+                self.show_confirm_upload = false;
                 if let Some(input) = self.file_input_ref.cast::<HtmlInputElement>() {
                     input.set_value(""); // clear previous file
                     input.click();
                 }
                 false
+            }
+            CsvDataSourceMsg::RejectUploadWarning => {
+                // User cancelled: just hide the confirmation dialog
+                self.show_confirm_upload = false;
+                true
             }
             CsvDataSourceMsg::FilePicked(file) => {
                 self.uploading = true;
@@ -307,29 +327,29 @@ impl Component for CsvDataSourceComponent {
         // column options from column_checks
         let column_options = if let Some(cols) = &self.column_checks {
             html! {
-                    <div class="modal-section">
-                        <h3>{"Columnas detectadas"}</h3>
-                        <div class="column-list">
-                            { for cols.iter().enumerate().map(|(i, c)| {
-                                let idx = i;
-                                let label = c.title.clone();
-                                let tooltip = format!("Haz doble click en '{}' para insertarla en la plantilla", label.clone());
-                                let onclick = ctx.link().callback(move |_| CsvDataSourceMsg::SelectColumn(idx));
-                                let ondblclick = ctx.link().callback(move |_| CsvDataSourceMsg::DoubleClickColumn(idx));
-                                html! {
-                                    <button
-                                        class="col-option"
-                                        {onclick}
-                                        ondblclick={ondblclick}
-                                        title={tooltip}
-                                        aria-label={format!("Insertar columna {}", label.clone())}>
-                                        { label }
-                                    </button>
-                                }
-                            })}
-                        </div>
+                <div class="modal-section">
+                    <h3>{"Columnas detectadas"}</h3>
+                    <div class="column-list">
+                        { for cols.iter().enumerate().map(|(i, c)| {
+                            let idx = i;
+                            let label = c.title.clone();
+                            let tooltip = format!("Haz doble click en '{}' para insertarla en la plantilla", label.clone());
+                            let onclick = ctx.link().callback(move |_| CsvDataSourceMsg::SelectColumn(idx));
+                            let ondblclick = ctx.link().callback(move |_| CsvDataSourceMsg::DoubleClickColumn(idx));
+                            html! {
+                                <button
+                                    class="col-option"
+                                    {onclick}
+                                    ondblclick={ondblclick}
+                                    title={tooltip}
+                                    aria-label={format!("Insertar columna {}", label.clone())}>
+                                    { label }
+                                </button>
+                            }
+                        })}
                     </div>
-                }
+                </div>
+            }
         } else {
             html! {}
         };
@@ -339,78 +359,107 @@ impl Component for CsvDataSourceComponent {
         let upload_onclick = if upload_disabled {
             Callback::<MouseEvent>::noop()
         } else {
+            // Now TriggerFilePicker shows a warning first
             ctx.link().callback(|_| CsvDataSourceMsg::TriggerFilePicker)
         };
 
         html! {
-                <>
-                <button
-                    class={btn_classes}
-                    title={title_attr}
-                    onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
-                    <i class="material-icons">{"table_chart"}</i>
-                    <span class="icon-label">{status_text}</span>
-                </button>
+            <>
+            <button
+                class={btn_classes}
+                title={title_attr}
+                onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
+                <i class="material-icons">{"table_chart"}</i>
+                <span class="icon-label">{status_text}</span>
+            </button>
 
-                { if self.show_modal {
+            { if self.show_modal {
+                html! {
+                    <div class="modal-overlay" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
+                        <div class="modal-card" onclick={|e: MouseEvent| e.stop_propagation()}>
+                            <header class="modal-header">
+                                <div class="modal-header-left">
+                                    <i class="material-icons header-icon">{"table_chart"}</i>
+                                    <h2 class="modal-title">{"CSV - Manager"}</h2>
+                                </div>
+                                <button class="close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"✕"}</button>
+                            </header>
+                            <div class="modal-body">
+                                <section class="modal-section upload-section">
+                                    <h3>{"Subir CSV"}</h3>
+                                    <p class="muted">{"Selecciona un archivo .csv como fuente de datos para tu plantilla."}</p>
+                                    <p class="muted" style="color: #a00;">
+                                        {"Advertencia: al subir un nuevo CSV, las etiquetas en el documento que no estén presentes en el CSV procesado pueden ser purgadas."}
+                                    </p>
+                                    <div class="upload-actions">
+                                        <button
+                                            class="primary upload-btn"
+                                            disabled={upload_disabled}
+                                            onclick={upload_onclick}
+                                            aria-busy={self.uploading.to_string()}
+                                            title={ if upload_disabled { "Subiendo..." } else { "Subir archivo" } }>
+                                            <i class="material-icons">{"file_upload"}</i>
+                                            { if self.uploading { " Subiendo..." } else { " Subir archivo" } }
+                                        </button>
+                                        <input ref={self.file_input_ref.clone()}
+                                            type="file"
+                                            accept=".csv"
+                                            style="display:none"
+                                            onchange={ctx.link().callback(|event: Event| {
+                                                let input: HtmlInputElement = event.target().unwrap().dyn_into().unwrap();
+                                                if let Some(list) = input.files() {
+                                                    if let Some(file) = list.get(0) {
+                                                        return CsvDataSourceMsg::FilePicked(file);
+                                                    }
+                                                }
+                                                CsvDataSourceMsg::UploadResult(Err("No file selected".into()))
+                                            })}
+                                        />
+                                        { if let Some(err) = &self.upload_error {
+                                            html! { <p class="error">{ err }</p> }
+                                        } else { html!{} } }
+                                    </div>
+                                </section>
+
+                                { column_options }
+                            </div>
+
+                            <footer class="modal-footer">
+                                <button class="secondary close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"Cerrar"}</button>
+                            </footer>
+                        </div>
+                    </div>
+                }
+            } else {
+                html! {}
+            } }
+
+            // Confirmation dialog shown before file picker is triggered
+            { if self.show_confirm_upload {
                     html! {
-                        <div class="modal-overlay" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
+                        <div class="modal-overlay" onclick={ctx.link().callback(|_| CsvDataSourceMsg::RejectUploadWarning)}>
                             <div class="modal-card" onclick={|e: MouseEvent| e.stop_propagation()}>
                                 <header class="modal-header">
-                                    <div class="modal-header-left">
-                                        <i class="material-icons header-icon">{"table_chart"}</i>
-                                        <h2 class="modal-title">{"CSV - Manager"}</h2>
-                                    </div>
-                                    <button class="close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"✕"}</button>
+                                    <h2 class="modal-title">{"Advertencia: reemplazo de etiquetas"}</h2>
                                 </header>
                                 <div class="modal-body">
-                                    <section class="modal-section upload-section">
-                                        <h3>{"Subir CSV"}</h3>
-                                        <p class="muted">{"Selecciona un archivo .csv como fuente de datos para tu plantilla."}</p>
-                                        <div class="upload-actions">
-                                            <button
-                                                class="primary upload-btn"
-                                                disabled={upload_disabled}
-                                                onclick={upload_onclick}
-                                                aria-busy={self.uploading.to_string()}
-                                                title={ if upload_disabled { "Subiendo..." } else { "Subir archivo" } }>
-                                                <i class="material-icons">{"file_upload"}</i>
-                                                { if self.uploading { " Subiendo..." } else { " Subir archivo" } }
-                                            </button>
-                                            <input ref={self.file_input_ref.clone()}
-                                                type="file"
-                                                accept=".csv"
-                                                style="display:none"
-                                                onchange={ctx.link().callback(|event: Event| {
-                                                    let input: HtmlInputElement = event.target().unwrap().dyn_into().unwrap();
-                                                    if let Some(list) = input.files() {
-                                                        if let Some(file) = list.get(0) {
-                                                            return CsvDataSourceMsg::FilePicked(file);
-                                                        }
-                                                    }
-                                                    CsvDataSourceMsg::UploadResult(Err("No file selected".into()))
-                                                })}
-                                            />
-                                            { if let Some(err) = &self.upload_error {
-                                                html! { <p class="error">{ err }</p> }
-                                            } else { html!{} } }
-                                        </div>
-                                    </section>
-
-                                    { column_options }
+                                    <p>
+                                        {"Estás a punto de subir un nuevo CSV. Las etiquetas (placeholders) que estén actualmente en el documento y que no aparezcan en el CSV procesado pueden ser eliminadas (purgadas). ¿Deseas continuar?"}
+                                    </p>
                                 </div>
-
                                 <footer class="modal-footer">
-                                    <button class="secondary close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"Cerrar"}</button>
+                                    <button class="secondary" onclick={ctx.link().callback(|_| CsvDataSourceMsg::RejectUploadWarning)}>{"Cancelar"}</button>
+                                    <button class="primary" onclick={ctx.link().callback(|_| CsvDataSourceMsg::AcceptUploadWarning)}>{"Continuar y seleccionar archivo"}</button>
                                 </footer>
                             </div>
                         </div>
                     }
                 } else {
                     html! {}
-                } }
-                </>
+                }
             }
+            </>
+        }
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, first_render: bool) {
