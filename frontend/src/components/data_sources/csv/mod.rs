@@ -304,7 +304,7 @@ impl Component for CsvDataSourceComponent {
                         { for cols.iter().enumerate().map(|(i, c)| {
                             let idx = i;
                             let label = c.title.clone();
-                            let tooltip = format!("Pulsa para insertar '{}' en la plantilla", label.clone());
+                            let tooltip = format!("Haz doble click en '{}' para insertarla en la plantilla", label.clone());
                             let onclick = ctx.link().callback(move |_| CsvDataSourceMsg::SelectColumn(idx));
                             let ondblclick = ctx.link().callback(move |_| CsvDataSourceMsg::DoubleClickColumn(idx));
                             html! {
