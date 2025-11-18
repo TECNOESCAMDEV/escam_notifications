@@ -171,9 +171,9 @@ fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usiz
     if let Some(start) = text[..pos].rfind("[ph:") {
         // Find the next closing bracket after start
         if let Some(rel_end) = text[start..].find(']') {
-            let end = start + rel_end + 1; // make end exclusive
-            // Ensure cursor is actually inside the found span
-            if pos >= start && pos <= end {
+            let end = start + rel_end + 1; // end is exclusive
+            // Ensure cursor is actually inside the found span (end is exclusive)
+            if pos >= start && pos < end {
                 return Some((start, end));
             }
         }
