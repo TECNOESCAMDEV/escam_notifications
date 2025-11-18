@@ -40,19 +40,31 @@ use web_sys::HtmlElement;
 /// // If the caret is anywhere from the opening '[' to the closing ']',
 /// // this function returns Some("123".to_string()).
 /// ```
+// language: rust
 pub fn get_img_tag_id_at_cursor(text: &str, cursor_pos_utf16: usize) -> Option<String> {
-    let cursor_pos_byte = text
-        .encode_utf16()
-        .take(cursor_pos_utf16)
-        .map(|c| char::from_u32(c as u32).unwrap().len_utf8())
-        .sum::<usize>();
+    // Safely convert UTF-16 position to UTF-8 byte index.
+    let mut utf16_count = 0usize;
+    let mut cursor_pos_byte = text.len();
+    for (byte_idx, ch) in text.char_indices() {
+        let ch_utf16_len = ch.len_utf16();
+        if utf16_count + ch_utf16_len > cursor_pos_utf16 {
+            cursor_pos_byte = byte_idx;
+            break;
+        }
+        utf16_count += ch_utf16_len;
+    }
+
+    let cursor_pos_byte = cursor_pos_byte.min(text.len());
 
     let re = Regex::new(r"\[img:([^]]+)]").unwrap();
     for mat in re.captures_iter(text) {
         let m = mat.get(0).unwrap();
         let start = m.start();
         let end = m.end();
-        if cursor_pos_byte >= start && cursor_pos_byte <= end {
+
+        // Make `start` and `end` exclusive: the cursor immediately before '['
+        // or immediately after ']' is no longer considered "inside".
+        if cursor_pos_byte > start && cursor_pos_byte < end {
             return mat.get(1).map(|id| id.as_str().to_string());
         }
     }
