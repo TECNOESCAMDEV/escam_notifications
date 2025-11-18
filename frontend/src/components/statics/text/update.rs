@@ -12,9 +12,12 @@
 //! - Handling image insertion: upload -> base64 -> `[img:<uuid>]` tag -> template images list.
 //! - Deleting images, which removes both the asset and its inline tag.
 //! - Persisting the template via a backend POST, with user-facing toast messages (Spanish).
+
 use base64::{engine::general_purpose, Engine as _};
 use gloo_file::{futures::read_as_bytes, Blob};
 use gloo_net::http::Request;
+use regex::Regex;
+use std::collections::HashSet;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlTextAreaElement;
 
@@ -35,7 +38,7 @@ use super::state::StaticTextComponent;
 /// Contract
 /// - Mutates `component` based on `msg`.
 /// - May dispatch further messages via `ctx.link()` (e.g., async callbacks).
-/// - Returns `true` to re-render the view, `false` to short-circuit when only side-effects occur.
+/// - Returns `true` to re-render the view, `false` to short-circuit when only side effects occur.
 pub fn update(
     component: &mut StaticTextComponent,
     ctx: &Context<StaticTextComponent>,
@@ -288,7 +291,10 @@ pub fn update(
             if let Some(textarea) = component.textarea_ref.cast::<HtmlTextAreaElement>() {
                 let current_value = textarea.value();
                 let start = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                let end = textarea.selection_end().unwrap_or(Some(start as u32)).unwrap_or(start as u32) as usize;
+                let end = textarea
+                    .selection_end()
+                    .unwrap_or(Some(start as u32))
+                    .unwrap_or(start as u32) as usize;
 
                 // Avoid out-of-bounds
                 let start = start.min(current_value.len());
@@ -318,6 +324,44 @@ pub fn update(
 
             // Force re-render to reflect changes
             true
+        }
+        Msg::CsvColumnsUpdated(cols) => {
+            // Build a set of allowed titles
+            let allowed: HashSet<String> = cols.into_iter().map(|c| c.title).collect();
+
+            // Regex for placeholders: [ph:TITLE:BASE64]
+            let ph_re = Regex::new(r"\[ph:([^:\]]+):([A-Za-z0-9+/=]+)]").unwrap();
+
+            // Replace placeholders whose TITLE is not in `allowed` with an empty string
+            let new_text = ph_re
+                .replace_all(&component.text, |caps: &regex::Captures| {
+                    let title = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                    if allowed.contains(title) {
+                        caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
+                    } else {
+                        String::new()
+                    }
+                })
+                .into_owned();
+
+            if new_text != component.text {
+                component.text = new_text.clone();
+                // Keep the template synchronized if present
+                if let Some(template) = &mut component.template {
+                    template.text = new_text.clone();
+                }
+                // Update the textarea DOM if present
+                if let Some(textarea) = component
+                    .textarea_ref
+                    .cast::<HtmlTextAreaElement>()
+                {
+                    textarea.set_value(&new_text);
+                }
+                // Recalculate size and refresh images if applicable
+                ctx.link().send_message(Msg::AutoResize);
+                return true;
+            }
+            false
         }
     }
 }

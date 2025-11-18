@@ -18,6 +18,7 @@ use crate::components::data_sources::csv::CsvDataSourceComponent;
 use crate::components::statics::text::dialogs::image::image_dialog;
 use base64::engine::general_purpose;
 use base64::Engine;
+use common::model::csv::ColumnCheck;
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
 use wasm_bindgen::JsCast;
@@ -50,8 +51,11 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
                 {icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false)}
                 {icon_button("save", "Guardar", link.callback(|_| Msg::Save), false)}
                 <div>
-                    <CsvDataSourceComponent template_id={component.template.as_ref().and_then(|t| Some(t.id.clone()))}
-                                            on_column_selected={link.callback(|col_check| Msg::InsertCsvColumnPlaceholder(col_check))} />
+                    <CsvDataSourceComponent
+                        template_id={component.template.as_ref().and_then(|t| Some(t.id.clone()))}
+                        on_column_selected={link.callback(|col_check| Msg::InsertCsvColumnPlaceholder(col_check))}
+                        on_csv_changed={link.callback(|cols: Vec<ColumnCheck>| Msg::CsvColumnsUpdated(cols))}
+                    />
                 </div>
             </div>
 

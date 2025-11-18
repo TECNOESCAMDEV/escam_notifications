@@ -106,6 +106,8 @@ pub struct CsvDataSourceProps {
     pub template_id: Option<String>,
     #[prop_or_default]
     pub on_column_selected: Option<Callback<ColumnCheck>>,
+    #[prop_or_default]
+    pub on_csv_changed: Option<Callback<Vec<ColumnCheck>>>,
 }
 
 pub enum CsvDataSourceMsg {
@@ -163,6 +165,13 @@ impl Component for CsvDataSourceComponent {
                     JobStatus::Completed(payload) => {
                         self.is_verifying = false;
                         self.apply_completed(payload);
+
+                        // Emit callback to parent with the new column checks if provided
+                        if let Some(cb) = &ctx.props().on_csv_changed {
+                            if let Some(cols) = &self.column_checks {
+                                cb.emit(cols.clone());
+                            }
+                        }
                     }
                     JobStatus::Failed(err_msg) => {
                         self.is_verifying = false;
@@ -298,29 +307,29 @@ impl Component for CsvDataSourceComponent {
         // column options from column_checks
         let column_options = if let Some(cols) = &self.column_checks {
             html! {
-                <div class="modal-section">
-                    <h3>{"Columnas detectadas"}</h3>
-                    <div class="column-list">
-                        { for cols.iter().enumerate().map(|(i, c)| {
-                            let idx = i;
-                            let label = c.title.clone();
-                            let tooltip = format!("Haz doble click en '{}' para insertarla en la plantilla", label.clone());
-                            let onclick = ctx.link().callback(move |_| CsvDataSourceMsg::SelectColumn(idx));
-                            let ondblclick = ctx.link().callback(move |_| CsvDataSourceMsg::DoubleClickColumn(idx));
-                            html! {
-                                <button
-                                    class="col-option"
-                                    {onclick}
-                                    ondblclick={ondblclick}
-                                    title={tooltip}
-                                    aria-label={format!("Insertar columna {}", label.clone())}>
-                                    { label }
-                                </button>
-                            }
-                        })}
+                    <div class="modal-section">
+                        <h3>{"Columnas detectadas"}</h3>
+                        <div class="column-list">
+                            { for cols.iter().enumerate().map(|(i, c)| {
+                                let idx = i;
+                                let label = c.title.clone();
+                                let tooltip = format!("Haz doble click en '{}' para insertarla en la plantilla", label.clone());
+                                let onclick = ctx.link().callback(move |_| CsvDataSourceMsg::SelectColumn(idx));
+                                let ondblclick = ctx.link().callback(move |_| CsvDataSourceMsg::DoubleClickColumn(idx));
+                                html! {
+                                    <button
+                                        class="col-option"
+                                        {onclick}
+                                        ondblclick={ondblclick}
+                                        title={tooltip}
+                                        aria-label={format!("Insertar columna {}", label.clone())}>
+                                        { label }
+                                    </button>
+                                }
+                            })}
+                        </div>
                     </div>
-                </div>
-            }
+                }
         } else {
             html! {}
         };
@@ -334,74 +343,74 @@ impl Component for CsvDataSourceComponent {
         };
 
         html! {
-            <>
-            <button
-                class={btn_classes}
-                title={title_attr}
-                onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
-                <i class="material-icons">{"table_chart"}</i>
-                <span class="icon-label">{status_text}</span>
-            </button>
+                <>
+                <button
+                    class={btn_classes}
+                    title={title_attr}
+                    onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
+                    <i class="material-icons">{"table_chart"}</i>
+                    <span class="icon-label">{status_text}</span>
+                </button>
 
-            { if self.show_modal {
-                html! {
-                    <div class="modal-overlay" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
-                        <div class="modal-card" onclick={|e: MouseEvent| e.stop_propagation()}>
-                            <header class="modal-header">
-                                <div class="modal-header-left">
-                                    <i class="material-icons header-icon">{"table_chart"}</i>
-                                    <h2 class="modal-title">{"CSV - Manager"}</h2>
-                                </div>
-                                <button class="close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"✕"}</button>
-                            </header>
-                            <div class="modal-body">
-                                <section class="modal-section upload-section">
-                                    <h3>{"Subir CSV"}</h3>
-                                    <p class="muted">{"Selecciona un archivo .csv como fuente de datos para tu plantilla."}</p>
-                                    <div class="upload-actions">
-                                        <button
-                                            class="primary upload-btn"
-                                            disabled={upload_disabled}
-                                            onclick={upload_onclick}
-                                            aria-busy={self.uploading.to_string()}
-                                            title={ if upload_disabled { "Subiendo..." } else { "Subir archivo" } }>
-                                            <i class="material-icons">{"file_upload"}</i>
-                                            { if self.uploading { " Subiendo..." } else { " Subir archivo" } }
-                                        </button>
-                                        <input ref={self.file_input_ref.clone()}
-                                            type="file"
-                                            accept=".csv"
-                                            style="display:none"
-                                            onchange={ctx.link().callback(|event: Event| {
-                                                let input: HtmlInputElement = event.target().unwrap().dyn_into().unwrap();
-                                                if let Some(list) = input.files() {
-                                                    if let Some(file) = list.get(0) {
-                                                        return CsvDataSourceMsg::FilePicked(file);
-                                                    }
-                                                }
-                                                CsvDataSourceMsg::UploadResult(Err("No file selected".into()))
-                                            })}
-                                        />
-                                        { if let Some(err) = &self.upload_error {
-                                            html! { <p class="error">{ err }</p> }
-                                        } else { html!{} } }
+                { if self.show_modal {
+                    html! {
+                        <div class="modal-overlay" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>
+                            <div class="modal-card" onclick={|e: MouseEvent| e.stop_propagation()}>
+                                <header class="modal-header">
+                                    <div class="modal-header-left">
+                                        <i class="material-icons header-icon">{"table_chart"}</i>
+                                        <h2 class="modal-title">{"CSV - Manager"}</h2>
                                     </div>
-                                </section>
+                                    <button class="close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"✕"}</button>
+                                </header>
+                                <div class="modal-body">
+                                    <section class="modal-section upload-section">
+                                        <h3>{"Subir CSV"}</h3>
+                                        <p class="muted">{"Selecciona un archivo .csv como fuente de datos para tu plantilla."}</p>
+                                        <div class="upload-actions">
+                                            <button
+                                                class="primary upload-btn"
+                                                disabled={upload_disabled}
+                                                onclick={upload_onclick}
+                                                aria-busy={self.uploading.to_string()}
+                                                title={ if upload_disabled { "Subiendo..." } else { "Subir archivo" } }>
+                                                <i class="material-icons">{"file_upload"}</i>
+                                                { if self.uploading { " Subiendo..." } else { " Subir archivo" } }
+                                            </button>
+                                            <input ref={self.file_input_ref.clone()}
+                                                type="file"
+                                                accept=".csv"
+                                                style="display:none"
+                                                onchange={ctx.link().callback(|event: Event| {
+                                                    let input: HtmlInputElement = event.target().unwrap().dyn_into().unwrap();
+                                                    if let Some(list) = input.files() {
+                                                        if let Some(file) = list.get(0) {
+                                                            return CsvDataSourceMsg::FilePicked(file);
+                                                        }
+                                                    }
+                                                    CsvDataSourceMsg::UploadResult(Err("No file selected".into()))
+                                                })}
+                                            />
+                                            { if let Some(err) = &self.upload_error {
+                                                html! { <p class="error">{ err }</p> }
+                                            } else { html!{} } }
+                                        </div>
+                                    </section>
 
-                                { column_options }
+                                    { column_options }
+                                </div>
+
+                                <footer class="modal-footer">
+                                    <button class="secondary close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"Cerrar"}</button>
+                                </footer>
                             </div>
-
-                            <footer class="modal-footer">
-                                <button class="secondary close-btn" onclick={ctx.link().callback(|_| CsvDataSourceMsg::ToggleModal)}>{"Cerrar"}</button>
-                            </footer>
                         </div>
-                    </div>
-                }
-            } else {
-                html! {}
-            } }
-            </>
-        }
+                    }
+                } else {
+                    html! {}
+                } }
+                </>
+            }
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, first_render: bool) {

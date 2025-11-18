@@ -35,4 +35,5 @@ pub enum Msg {
     Save,
     SetTemplate(Option<common::model::template::Template>),
     InsertCsvColumnPlaceholder(ColumnCheck),
+    CsvColumnsUpdated(Vec<ColumnCheck>),
 }
