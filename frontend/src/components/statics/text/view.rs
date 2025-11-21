@@ -194,23 +194,39 @@ fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usiz
 /// 4. Expand markers back into repeated `<br>` tags.
 /// 5. Replace `[img:<id>]` placeholders with `<img src="data:...">` for template images.
 /// 6. Replace `[ph:TITLE:BASE64]` placeholders by decoding BASE64 and inserting an escaped span.
-fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
-    // Normalize line endings and remove invisible characters at the start
-    let text = component.text.clone();
-    let text = text.replace("\r\n", "\n").replace('\r', "\n");
-    let text = text
+use uuid::Uuid;
+use yew::virtual_dom::AttrValue;
+
+
+/// Normalize line endings and trim invisible characters at the start.
+///
+/// - Converts CRLF and CR to LF.
+/// - Removes BOM / zero-width spaces at the beginning.
+fn normalize_text(input: &str) -> String {
+    input
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
         .trim_start_matches(|c: char| c == '\u{feff}' || c == '\u{200b}')
-        .to_string();
+        .to_string()
+}
 
-    // Preserve single-newline spacing trick
-    let text_with_spaces = text.replace("\n", " \n");
+/// Apply the "preserve single-newline spacing" trick used before parsing.
+///
+/// Replaces each `\n` with ` \n` to encourage pulldown_cmark to keep single newlines.
+fn preserve_single_newline_trick(input: &str) -> String {
+    input.replace("\n", " \n")
+}
 
-    // Placeholder regex y vector de reemplazos
+/// Find `[ph:TITLE:BASE64]` placeholders and replace them with temporary unique tokens.
+///
+/// Returns the transformed text and a vector of `(token, html_snippet)` replacements.
+/// The HTML snippets are already escaped/safe.
+fn replace_ph_placeholders(input: &str) -> (String, Vec<(String, String)>) {
     let ph_re = Regex::new(r"\[ph:([^:\]]+):([A-Za-z0-9+/=]+)]").unwrap();
     let mut replacements: Vec<(String, String)> = Vec::new();
 
     let text_with_tokens = ph_re
-        .replace_all(&text_with_spaces, |caps: &regex::Captures| {
+        .replace_all(input, |caps: &regex::Captures| {
             let title = caps.get(1).map(|m| m.as_str()).unwrap_or("");
             let b64 = caps.get(2).map(|m| m.as_str()).unwrap_or("");
 
@@ -230,42 +246,59 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
                 Err(_) => r#"<span>[invalid base64]</span>"#.to_string(),
             };
 
-            let uuid = uuid::Uuid::new_v4().simple().to_string();
+            let uuid = Uuid::new_v4().simple().to_string();
             let token = format!("PH{}", uuid);
             replacements.push((token.clone(), replacement_html));
             token
         })
         .into_owned();
 
-    // Compress multiple newlines into a unique marker, with line breaks around
-    let re = Regex::new(r"(\n\s*){2,}").unwrap();
-    let marked_text = re
-        .replace_all(&text_with_tokens, |caps: &regex::Captures| {
-            let count = caps[0].matches('\n').count();
-            format!("\nBR_MARKER{}\n", count)
-        })
-        .into_owned();
+    (text_with_tokens, replacements)
+}
 
-    // Parse markdown
-    let parser = Parser::new(&marked_text);
+/// Compress sequences of 2+ newlines into markers of the form `\nBR_MARKER{N}\n`.
+///
+/// The count N equals the number of newlines compressed (so it can later expand to N `<br>`).
+fn compress_multiple_newlines(input: &str) -> String {
+    let re = Regex::new(r"(\n\s*){2,}").unwrap();
+    re.replace_all(input, |caps: &regex::Captures| {
+        let count = caps[0].matches('\n').count();
+        format!("\nBR_MARKER{}\n", count)
+    })
+        .into_owned()
+}
+
+/// Parse markdown text into HTML using pulldown_cmark.
+fn parse_markdown_to_html(input: &str) -> String {
+    let parser = Parser::new(input);
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
+    html_output
+}
 
-    // Expand BR_MARKER{N} markers into repeated <br> tags
+/// Expand `BR_MARKER{N}` placeholders into repeated `<br>` tags.
+fn expand_br_markers(input: &str) -> String {
     let re_br = Regex::new(r"BR_MARKER(\d+)").unwrap();
-    let mut final_html = re_br
-        .replace_all(&html_output, |caps: &regex::Captures| {
+    re_br
+        .replace_all(input, |caps: &regex::Captures| {
             let n = caps[1].parse::<usize>().unwrap_or(1);
             "<br>".repeat(n)
         })
-        .into_owned();
+        .into_owned()
+}
 
-    // Replace PH... tokens with their safe HTML
-    for (token, html_snippet) in &replacements {
-        final_html = final_html.replace(token, html_snippet);
+/// Replace previously generated PH... tokens with their safe HTML snippets.
+fn replace_tokens_with_html(mut html: String, replacements: &[(String, String)]) -> String {
+    for (token, snippet) in replacements {
+        html = html.replace(token, snippet);
     }
+    html
+}
 
-    // Inline image resolver `[img:<id>]`
+/// Resolve inline template images of the form `[img:<id>]` into data URLs.
+///
+/// Uses `component.template.images` to find matches and substitute `<img .../>`.
+fn resolve_inline_images(mut html: String, component: &StaticTextComponent) -> String {
     if let Some(template) = &component.template {
         if let Some(images) = &template.images {
             for image in images {
@@ -274,10 +307,41 @@ fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
                     r#"<img src="data:image/*;base64,{}" style="max-width:200px;max-height:200px;vertical-align:middle;" />"#,
                     image.base64
                 );
-                final_html = final_html.replace(&img_tag, &img_html);
+                html = html.replace(&img_tag, &img_html);
             }
         }
     }
+    html
+}
+
+/// Top-level orchestrator: reconstructs the original `compute_preview_html` behavior by
+/// composing the smaller helpers.
+///
+/// Returns an `AttrValue` suitable to pass to Yew.
+pub fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
+    // 1. Normalize and trim
+    let text = normalize_text(&component.text);
+
+    // 2. Preserve single-newline trick
+    let text = preserve_single_newline_trick(&text);
+
+    // 3. Replace placeholders with tokens
+    let (text, replacements) = replace_ph_placeholders(&text);
+
+    // 4. Compress multiple newlines into markers
+    let marked_text = compress_multiple_newlines(&text);
+
+    // 5. Parse markdown to HTML
+    let parsed_html = parse_markdown_to_html(&marked_text);
+
+    // 6. Expand BR markers into <br>
+    let expanded_html = expand_br_markers(&parsed_html);
+
+    // 7. Replace placeholder tokens with safe HTML
+    let replaced_html = replace_tokens_with_html(expanded_html, &replacements);
+
+    // 8. Resolve inline images
+    let final_html = resolve_inline_images(replaced_html, component);
 
     AttrValue::from(final_html)
 }
