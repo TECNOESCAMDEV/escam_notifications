@@ -54,12 +54,6 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
 ///
 /// Uses `icon_button`, `CsvDataSourceComponent` and forwards events via `link`.
 fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
-    // Determine if the text is dirty compared to original MD5
-    let dirty = component
-        .original_md5
-        .as_ref()
-        .map_or(false, |orig| orig != &compute_md5(&component.text));
-
     html! {
         <div class="icon-toolbar">
             { icon_button("undo", "Deshacer", link.callback(|_| Msg::Undo), false) }
@@ -71,19 +65,6 @@ fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
             { icon_button("format_list_bulleted", "Items", make_style_callback(link, "bulleted_list"), false) }
             { icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false) }
             { icon_button("save", "Guardar", link.callback(|_| Msg::Save), false) }
-            // Dirty indicator
-            {
-                if dirty {
-                    html! {
-                        <span
-                            title="Cambios sin guardar"
-                            style="display:inline-block;width:10px;height:10px;background:#e53935;border-radius:50%;margin-left:8px;vertical-align:middle;"
-                        />
-                    }
-                } else {
-                    html! {}
-                }
-            }
             <div>
                 <CsvDataSourceComponent
                     template_id={component.template.as_ref().and_then(|t| Some(t.id.clone()))}
@@ -110,16 +91,50 @@ fn make_style_callback(
 ///
 /// Uses `component.active_tab` and `link` to dispatch `Msg::SetTab`.
 fn build_tab_bar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
+    // Determine if there are unsaved changes by comparing current MD5 with original
+    let dirty = component
+        .original_md5
+        .as_ref()
+        .map_or(false, |orig| orig != &compute_md5(&component.text));
+
     html! {
         <div class="tab-bar">
             <button
                 class={classes!("tab-btn", if component.active_tab == "editor" { "active" } else { "" })}
                 onclick={link.callback(|_| Msg::SetTab("editor".to_string()))}
-            >{"Editor"}</button>
+                style="position: relative;"
+            >
+                {"Editor"}
+                // Show red dot if there are unsaved changes
+                {
+                    if dirty {
+                        html! {
+                            <span
+                                title="Cambios sin guardar"
+                                style="
+                                    position: absolute;
+                                    top: 4px;
+                                    right: 6px;
+                                    width: 8px;
+                                    height: 8px;
+                                    background: #e53935;
+                                    border-radius: 50%;
+                                    display: inline-block;
+                                    vertical-align: middle;
+                                "
+                            />
+                        }
+                    } else {
+                        html! {}
+                    }
+                }
+            </button>
             <button
                 class={classes!("tab-btn", if component.active_tab == "preview" { "active" } else { "" })}
                 onclick={link.callback(|_| Msg::SetTab("preview".to_string()))}
-            >{"Previsualización"}</button>
+            >
+                {"Previsualización"}
+            </button>
         </div>
     }
 }
