@@ -1,15 +1,16 @@
 //! View rendering for the static text editor component.
 //!
 //! The UI is split across two tabs: "Editor" (a growing `<textarea>`) and
-//! "Previsualización" (a markdown preview). A simple icon toolbar provides
-//! formatting actions and image insertion. Inline images are represented by
-//! `[img:<id>]` tags in the text, resolved to `<img>` elements in the preview.
+//! "Preview" (a markdown preview). A simple icon toolbar provides formatting
+//! actions and image insertion. Inline images are represented by `[img:<id>]`
+//! tags in the text and are resolved to `<img>` elements in the preview.
 //!
 //! Notes
 //! - All user-facing messages remain in Spanish by design.
-//! - The preview pipeline performs a whitespace-preserving trick: runs of multiple
-//!   newlines are temporarily replaced, parsed by `pulldown_cmark`, then expanded
-//!   into repeated `<br>` tags to emulate a loose paragraph style.
+//! - The preview pipeline performs a whitespace-preserving trick: runs of
+//!   multiple newlines are temporarily replaced by markers, parsed by
+//!   `pulldown_cmark`, then expanded into repeated `<br>` tags to emulate a
+//!   loose paragraph style while preserving single newlines.
 
 use super::helpers::{escape_html, get_img_tag_id_at_cursor};
 use super::messages::Msg;
@@ -27,7 +28,8 @@ use yew::prelude::*;
 
 /// Top-level view function orchestrating the smaller helpers.
 ///
-/// Calls `compute_preview_html` and composes toolbar, tabs and the active pane.
+/// Calls `compute_preview_html` and composes the toolbar, tab bar and the
+/// currently active pane (editor or preview).
 pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>) -> Html {
     let link = ctx.link();
     let preview_html = compute_preview_html(component);
@@ -47,7 +49,6 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
         </div>
     }
 }
-
 
 /// Build the left toolbar with formatting buttons, image and CSV helper.
 ///
@@ -78,7 +79,10 @@ fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
 /// Create a style application callback for the toolbar.
 ///
 /// `link` is the component `Scope` and `style` is the style name to apply.
-fn make_style_callback(link: &Scope<StaticTextComponent>, style: &'static str) -> Callback<MouseEvent> {
+fn make_style_callback(
+    link: &Scope<StaticTextComponent>,
+    style: &'static str,
+) -> Callback<MouseEvent> {
     let s = style.to_string();
     link.callback(move |_| Msg::ApplyStyle(s.clone(), ()))
 }
@@ -205,6 +209,8 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
 
 /// Return `(start, end)` byte indexes of a `[ph:...:BASE64]` placeholder that
 /// contains `cursor_pos`, or `None` if cursor is outside.
+///
+/// The end index is exclusive.
 fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usize)> {
     let pos = cursor_pos.min(text.len());
     // Search backwards for the last "[ph:" before or at cursor
@@ -223,13 +229,15 @@ fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usiz
 
 /// Produces the HTML used by the preview tab.
 ///
-/// Steps
-/// 1. Replace raw newlines with " \n" to help the Markdown parser preserve spacing.
-/// 2. Compress 2+ newline sequences into a temporary marker (e.g., "br3").
-/// 3. Parse the marked text with `pulldown_cmark` to HTML.
-/// 4. Expand markers back into repeated `<br>` tags.
-/// 5. Replace `[img:<id>]` placeholders with `<img src="data:...">` for template images.
-/// 6. Replace `[ph:TITLE:BASE64]` placeholders by decoding BASE64 and inserting an escaped span.
+/// Pipeline:
+/// 1. Normalize line endings and trim invisible characters at the start.
+/// 2. Apply a single-newline preservation trick to encourage `pulldown_cmark` to keep single line breaks.
+/// 3. Replace `ph` placeholders with temporary tokens and store safe HTML snippets.
+/// 4. Compress multiple-newline runs into markers so they survive markdown parsing.
+/// 5. Parse with `pulldown_cmark`.
+/// 6. Expand newline markers into repeated `<br>` tags.
+/// 7. Reinstate safe placeholder HTML snippets.
+/// 8. Resolve inline template images (`[img:<id>]`) into `data:` URLs.
 use uuid::Uuid;
 use yew::html::Scope;
 use yew::virtual_dom::AttrValue;
@@ -257,7 +265,7 @@ fn preserve_single_newline_trick(input: &str) -> String {
 /// Find `[ph:TITLE:BASE64]` placeholders and replace them with temporary unique tokens.
 ///
 /// Returns the transformed text and a vector of `(token, html_snippet)` replacements.
-/// The HTML snippets are already escaped/safe.
+/// The HTML snippets are already escaped and considered safe for reinsertion.
 fn replace_ph_placeholders(input: &str) -> (String, Vec<(String, String)>) {
     let ph_re = Regex::new(r"\[ph:([^:\]]+):([A-Za-z0-9+/=]+)]").unwrap();
     let mut replacements: Vec<(String, String)> = Vec::new();
@@ -295,7 +303,7 @@ fn replace_ph_placeholders(input: &str) -> (String, Vec<(String, String)>) {
 
 /// Compress sequences of 2+ newlines into markers of the form `\nBR_MARKER{N}\n`.
 ///
-/// The count N equals the number of newlines compressed (so it can later expand to N `<br>`).
+/// The count N equals the number of newlines compressed so it can later expand to N `<br>` tags.
 fn compress_multiple_newlines(input: &str) -> String {
     let re = Regex::new(r"(\n\s*){2,}").unwrap();
     re.replace_all(input, |caps: &regex::Captures| {
@@ -334,7 +342,7 @@ fn replace_tokens_with_html(mut html: String, replacements: &[(String, String)])
 
 /// Resolve inline template images of the form `[img:<id>]` into data URLs.
 ///
-/// Uses `component.template.images` to find matches and substitute `<img .../>`.
+/// Uses `component.template.images` to find matches and substitute with `<img ... />` elements.
 fn resolve_inline_images(mut html: String, component: &StaticTextComponent) -> String {
     if let Some(template) = &component.template {
         if let Some(images) = &template.images {
