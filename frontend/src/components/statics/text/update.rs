@@ -16,9 +16,10 @@
 use base64::{engine::general_purpose, Engine as _};
 use gloo_file::{futures::read_as_bytes, Blob};
 use gloo_net::http::Request;
+use js_sys::Reflect;
 use regex::Regex;
 use std::collections::HashSet;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::HtmlTextAreaElement;
 
 use yew::platform::spawn_local;
@@ -51,6 +52,9 @@ pub fn update(
                 component.history.truncate(component.history_index + 1);
                 component.history.push(new_text);
                 component.history_index = component.history.len() - 1;
+
+                // Update dirty flag
+                set_window_dirty_flag(component);
             }
             true
         }
@@ -58,6 +62,8 @@ pub fn update(
             if component.history_index > 0 {
                 component.history_index -= 1;
                 component.text = component.history[component.history_index].clone();
+                // Update dirty flag
+                set_window_dirty_flag(component);
             }
             true
         }
@@ -65,6 +71,8 @@ pub fn update(
             if component.history_index + 1 < component.history.len() {
                 component.history_index += 1;
                 component.text = component.history[component.history_index].clone();
+                // Update dirty flag
+                set_window_dirty_flag(component);
             }
             true
         }
@@ -130,6 +138,9 @@ pub fn update(
                     textarea.set_selection_start(Some(select_start)).ok();
                     textarea.set_selection_end(Some(select_end)).ok();
                     textarea.focus().ok();
+
+                    // Update dirty flag
+                    set_window_dirty_flag(component);
                 }
             }
             true
@@ -203,6 +214,8 @@ pub fn update(
                             ]);
                         }
                     });
+                    // Update dirty flag
+                    set_window_dirty_flag(component);
                 }
             }
             true
@@ -238,6 +251,9 @@ pub fn update(
             }
             component.selected_image_id = None;
             close_top_sheet(component.image_dialog_ref.clone());
+
+            // Update dirty flag
+            set_window_dirty_flag(component);
             true
         }
         Msg::Save => {
@@ -284,6 +300,9 @@ pub fn update(
                 .template
                 .as_ref()
                 .map(|t| compute_md5(&t.text));
+
+            // Update dirty flag
+            set_window_dirty_flag(component);
             true
         }
         Msg::InsertCsvColumnPlaceholder(col_check) => {
@@ -320,12 +339,18 @@ pub fn update(
                 textarea.set_selection_start(Some(new_pos)).ok();
                 textarea.set_selection_end(Some(new_pos)).ok();
                 textarea.focus().ok();
+
+                // Update dirty flag
+                set_window_dirty_flag(component);
             } else {
                 // Fallback: at the end of the text if textarea not found
                 if !component.text.is_empty() {
                     component.text.push(' ');
                 }
                 component.text.push_str(&placeholder);
+
+                // Update dirty flag
+                set_window_dirty_flag(component);
             }
 
             // Force re-render to reflect changes
@@ -365,13 +390,36 @@ pub fn update(
                 }
                 // Recalculate size and refresh images if applicable
                 ctx.link().send_message(Msg::AutoResize);
+
+                // Update dirty flag
+                set_window_dirty_flag(component);
                 return true;
             }
             false
         }
         Msg::SaveSucceeded => {
             component.original_md5 = Some(compute_md5(&component.text));
+
+            // Update dirty flag
+            set_window_dirty_flag(component);
             true
         }
+    }
+}
+
+/// Sets the global `app_dirty` flag based on whether the current text
+fn set_window_dirty_flag(component: &StaticTextComponent) {
+    if let Some(window) = web_sys::window() {
+        let dirty = component
+            .original_md5
+            .as_ref()
+            .map_or(!component.text.is_empty(), |orig| {
+                orig != &compute_md5(&component.text)
+            });
+        let _ = Reflect::set(
+            &window,
+            &JsValue::from_str("app_dirty"),
+            &JsValue::from_bool(dirty),
+        );
     }
 }
