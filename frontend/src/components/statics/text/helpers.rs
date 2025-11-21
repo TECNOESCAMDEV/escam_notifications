@@ -40,7 +40,6 @@ use web_sys::HtmlElement;
 /// // If the caret is anywhere from the opening '[' to the closing ']',
 /// // this function returns Some("123".to_string()).
 /// ```
-// language: rust
 pub fn get_img_tag_id_at_cursor(text: &str, cursor_pos_utf16: usize) -> Option<String> {
     // Safely convert UTF-16 position to UTF-8 byte index.
     let mut utf16_count = 0usize;
@@ -145,4 +144,9 @@ pub fn escape_html(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// Compute an MD5 hex digest for `input`.
+pub fn compute_md5(input: &str) -> String {
+    format!("{:x}", md5::compute(input))
 }

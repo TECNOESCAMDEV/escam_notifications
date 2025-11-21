@@ -21,7 +21,7 @@ gloo-timers = { version = "0.3.0", features = ["futures"] }
 gloo-file = { version = "0.3.0", features = ["futures"] }
 regex = "1.12.2"
 base64 = "0.22.1"
-
+md5 = "0.8.0"
 
 [build-dependencies]
 

@@ -29,7 +29,7 @@ use common::model::template::Template;
 
 use crate::tops_sheet::yw_material_top_sheet::{close_top_sheet, open_top_sheet};
 
-use super::helpers::{byte_to_utf16_idx, show_toast};
+use super::helpers::{byte_to_utf16_idx, compute_md5, show_toast};
 use super::messages::Msg;
 use super::state::StaticTextComponent;
 
@@ -252,6 +252,7 @@ pub fn update(
             }
 
             let template_clone = template.clone();
+            let link = ctx.link().clone();
             spawn_local(async move {
                 match Request::post("/api/templates/save")
                     .json(&template_clone)
@@ -260,6 +261,7 @@ pub fn update(
                     .await
                 {
                     Ok(response) if response.status() == 200 => {
+                        link.send_message(Msg::SaveSucceeded);
                         show_toast("Plantilla guardada correctamente.");
                     }
                     Ok(response) => {
@@ -278,6 +280,10 @@ pub fn update(
         }
         Msg::SetTemplate(template_opt) => {
             component.template = template_opt;
+            component.original_md5 = component
+                .template
+                .as_ref()
+                .map(|t| compute_md5(&t.text));
             true
         }
         Msg::InsertCsvColumnPlaceholder(col_check) => {
@@ -362,6 +368,10 @@ pub fn update(
                 return true;
             }
             false
+        }
+        Msg::SaveSucceeded => {
+            component.original_md5 = Some(compute_md5(&component.text));
+            true
         }
     }
 }

@@ -33,6 +33,7 @@ pub enum Msg {
     OpenImageDialogWithId(String),
     DeleteImage(String),
     Save,
+    SaveSucceeded,
     SetTemplate(Option<common::model::template::Template>),
     InsertCsvColumnPlaceholder(ColumnCheck),
     CsvColumnsUpdated(Vec<ColumnCheck>),

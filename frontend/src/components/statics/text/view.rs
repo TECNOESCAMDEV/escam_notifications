@@ -12,7 +12,7 @@
 //!   `pulldown_cmark`, then expanded into repeated `<br>` tags to emulate a
 //!   loose paragraph style while preserving single newlines.
 
-use super::helpers::{escape_html, get_img_tag_id_at_cursor};
+use super::helpers::{compute_md5, escape_html, get_img_tag_id_at_cursor};
 use super::messages::Msg;
 use super::state::StaticTextComponent;
 use crate::components::data_sources::csv::CsvDataSourceComponent;
@@ -54,6 +54,12 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
 ///
 /// Uses `icon_button`, `CsvDataSourceComponent` and forwards events via `link`.
 fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
+    // Determine if the text is dirty compared to original MD5
+    let dirty = component
+        .original_md5
+        .as_ref()
+        .map_or(false, |orig| orig != &compute_md5(&component.text));
+
     html! {
         <div class="icon-toolbar">
             { icon_button("undo", "Deshacer", link.callback(|_| Msg::Undo), false) }
@@ -65,6 +71,19 @@ fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
             { icon_button("format_list_bulleted", "Items", make_style_callback(link, "bulleted_list"), false) }
             { icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false) }
             { icon_button("save", "Guardar", link.callback(|_| Msg::Save), false) }
+            // Dirty indicator
+            {
+                if dirty {
+                    html! {
+                        <span
+                            title="Cambios sin guardar"
+                            style="display:inline-block;width:10px;height:10px;background:#e53935;border-radius:50%;margin-left:8px;vertical-align:middle;"
+                        />
+                    }
+                } else {
+                    html! {}
+                }
+            }
             <div>
                 <CsvDataSourceComponent
                     template_id={component.template.as_ref().and_then(|t| Some(t.id.clone()))}
