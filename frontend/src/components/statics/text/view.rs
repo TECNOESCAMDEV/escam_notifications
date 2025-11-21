@@ -25,134 +25,170 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlTextAreaElement, InputEvent};
 use yew::prelude::*;
 
-/// Top-level view function called by the component's `view()` method.
+/// Top-level view function orchestrating the smaller helpers.
+///
+/// Calls `compute_preview_html` and composes toolbar, tabs and the active pane.
 pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>) -> Html {
     let link = ctx.link();
     let preview_html = compute_preview_html(component);
 
-    let make_style_callback =
-        |style: &'static str| link.callback(move |_| Msg::ApplyStyle(style.to_string(), ()));
+    html! {
+        <div class="static-text-root">
+            { build_toolbar(component, link) }
+            { build_tab_bar(component, link) }
 
+            {
+                if component.active_tab == "editor" {
+                    build_editor_tab(component, link)
+                } else {
+                    build_preview_tab(preview_html)
+                }
+            }
+        </div>
+    }
+}
+
+
+/// Build the left toolbar with formatting buttons, image and CSV helper.
+///
+/// Uses `icon_button`, `CsvDataSourceComponent` and forwards events via `link`.
+fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
+    html! {
+        <div class="icon-toolbar">
+            { icon_button("undo", "Deshacer", link.callback(|_| Msg::Undo), false) }
+            { icon_button("redo", "Rehacer", link.callback(|_| Msg::Redo), false) }
+            { icon_button("text_fields", "Normal", make_style_callback(link, "normal"), false) }
+            { icon_button("format_bold", "Negrita", make_style_callback(link, "bold"), false) }
+            { icon_button("format_italic", "Cursiva", make_style_callback(link, "italic"), false) }
+            { icon_button("format_bold", "Negrita+Cursiva", make_style_callback(link, "bolditalic"), true) }
+            { icon_button("format_list_bulleted", "Items", make_style_callback(link, "bulleted_list"), false) }
+            { icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false) }
+            { icon_button("save", "Guardar", link.callback(|_| Msg::Save), false) }
+            <div>
+                <CsvDataSourceComponent
+                    template_id={component.template.as_ref().and_then(|t| Some(t.id.clone()))}
+                    on_column_selected={link.callback(|col_check| Msg::InsertCsvColumnPlaceholder(col_check))}
+                    on_csv_changed={link.callback(|cols: Vec<ColumnCheck>| Msg::CsvColumnsUpdated(cols))}
+                />
+            </div>
+        </div>
+    }
+}
+
+/// Create a style application callback for the toolbar.
+///
+/// `link` is the component `Scope` and `style` is the style name to apply.
+fn make_style_callback(link: &Scope<StaticTextComponent>, style: &'static str) -> Callback<MouseEvent> {
+    let s = style.to_string();
+    link.callback(move |_| Msg::ApplyStyle(s.clone(), ()))
+}
+
+/// Build the tab bar switching between Editor and Preview.
+///
+/// Uses `component.active_tab` and `link` to dispatch `Msg::SetTab`.
+fn build_tab_bar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
+    html! {
+        <div class="tab-bar">
+            <button
+                class={classes!("tab-btn", if component.active_tab == "editor" { "active" } else { "" })}
+                onclick={link.callback(|_| Msg::SetTab("editor".to_string()))}
+            >{"Editor"}</button>
+            <button
+                class={classes!("tab-btn", if component.active_tab == "preview" { "active" } else { "" })}
+                onclick={link.callback(|_| Msg::SetTab("preview".to_string()))}
+            >{"Previsualización"}</button>
+        </div>
+    }
+}
+
+/// Build the editor tab UI: line numbers, textarea with protections and image dialog.
+///
+/// Preserves the original textarea callbacks and behaviour but scoped inside this helper.
+fn build_editor_tab(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
     let line_count = component.text.lines().count().max(1);
     let line_numbers = (1..=line_count)
         .map(|n| html! { <div class="line-number">{n}</div> })
         .collect::<Html>();
 
     html! {
-        <div class="static-text-root">
-            <div class="icon-toolbar">
-                {icon_button("undo", "Deshacer", link.callback(|_| Msg::Undo), false)}
-                {icon_button("redo", "Rehacer", link.callback(|_| Msg::Redo), false)}
-                {icon_button("text_fields", "Normal", make_style_callback("normal"), false)}
-                {icon_button("format_bold", "Negrita", make_style_callback("bold"), false)}
-                {icon_button("format_italic", "Cursiva", make_style_callback("italic"), false)}
-                {icon_button("format_bold", "Negrita+Cursiva", make_style_callback("bolditalic"), true)}
-                {icon_button("format_list_bulleted", "Items", make_style_callback("bulleted_list"), false)}
-                {icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false)}
-                {icon_button("save", "Guardar", link.callback(|_| Msg::Save), false)}
-                <div>
-                    <CsvDataSourceComponent
-                        template_id={component.template.as_ref().and_then(|t| Some(t.id.clone()))}
-                        on_column_selected={link.callback(|col_check| Msg::InsertCsvColumnPlaceholder(col_check))}
-                        on_csv_changed={link.callback(|cols: Vec<ColumnCheck>| Msg::CsvColumnsUpdated(cols))}
-                    />
+        <>
+            <div style="display: flex; align-items: flex-start;">
+                <div
+                    class="line-numbers"
+                    style="user-select:none; text-align:right; padding:8px 4px 8px 0; color:#aaa; background:#fafafa; font-size:11px; font-family:monospace; min-width:32px;"
+                >
+                    { line_numbers }
                 </div>
+                <textarea
+                    id="static-textarea"
+                    ref={component.textarea_ref.clone()}
+                    value={component.text.clone()}
+                    spellcheck="false"
+                    oninput={link.batch_callback(|e: InputEvent| {
+                        let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
+                        vec![ Msg::UpdateText(value), Msg::AutoResize ]
+                    })}
+                    onscroll={link.callback(|_: Event| Msg::AutoResize)}
+                    onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                        let textarea = e.target_unchecked_into::<HtmlTextAreaElement>();
+                        let text = textarea.value();
+                        let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                        let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+
+                        // Protect [ph:...] placeholders
+                        if let Some((start, end)) = get_ph_bounds_at_cursor(&text, cursor_pos) {
+                            if e.key() == "Delete" {
+                                e.prevent_default();
+                                let mut new_text = String::with_capacity(text.len());
+                                new_text.push_str(&text[..start]);
+                                new_text.push_str(&text[end..]);
+                                return vec![ Msg::UpdateText(new_text), Msg::AutoResize ];
+                            } else if !arrow_keys.contains(&e.key().as_str()) {
+                                e.prevent_default();
+                                return vec![];
+                            }
+                        }
+
+                        // Protect inline image tags
+                        if get_img_tag_id_at_cursor(&text, cursor_pos).is_some() && !arrow_keys.contains(&e.key().as_str()) {
+                            e.prevent_default();
+                            vec![]
+                        } else if e.ctrl_key() && e.key() == "z" {
+                            vec![Msg::Undo]
+                        } else if e.ctrl_key() && e.key() == "y" {
+                            vec![Msg::Redo]
+                        } else {
+                            vec![]
+                        }
+                    })}
+                    onselect={link.callback(|e: Event| {
+                        let id_opt = e.target()
+                            .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
+                            .and_then(|textarea| {
+                                let text = textarea.value();
+                                let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                                get_img_tag_id_at_cursor(&text, cursor_pos)
+                            });
+                        match id_opt {
+                            Some(id) => Msg::OpenImageDialogWithId(id),
+                            None => Msg::AutoResize,
+                        }
+                    })}
+                    rows={1}
+                    style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
+                />
             </div>
+            { image_dialog(component, link) }
+        </>
+    }
+}
 
-            <div class="tab-bar">
-                <button
-                    class={classes!("tab-btn", if component.active_tab == "editor" { "active" } else { "" })}
-                    onclick={link.callback(|_| Msg::SetTab("editor".to_string()))}
-                >{"Editor"}</button>
-                <button
-                    class={classes!("tab-btn", if component.active_tab == "preview" { "active" } else { "" })}
-                    onclick={link.callback(|_| Msg::SetTab("preview".to_string()))}
-                >{"Previsualización"}</button>
-            </div>
-
-            {
-                if component.active_tab == "editor" {
-                    html! {
-                        <>
-                            <div style="display: flex; align-items: flex-start;">
-                                <div
-                                    class="line-numbers"
-                                    style="user-select:none; text-align:right; padding:8px 4px 8px 0; color:#aaa; background:#fafafa; font-size:11px; font-family:monospace; min-width:32px;"
-                                >
-                                    { line_numbers }
-                                </div>
-                                <textarea
-                                    id="static-textarea"
-                                    ref={component.textarea_ref.clone()}
-                                    value={component.text.clone()}
-                                    spellcheck="false"
-                                    oninput={link.batch_callback(|e: InputEvent| {
-                                        let value = e.target_unchecked_into::<HtmlTextAreaElement>().value();
-                                        vec![ Msg::UpdateText(value), Msg::AutoResize ]
-                                    })}
-                                    onscroll={link.callback(|_: Event| {
-                                        Msg::AutoResize
-                                    })}
-                                    onkeydown={link.batch_callback(|e: KeyboardEvent| {
-                                        let textarea = e.target_unchecked_into::<HtmlTextAreaElement>();
-                                        let text = textarea.value();
-                                        let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                                        let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
-
-                                        // Check if cursor is inside a [ph:...] placeholder
-                                        if let Some((start, end)) = get_ph_bounds_at_cursor(&text, cursor_pos) {
-                                            // If it's the Delete key, remove the whole placeholder
-                                            if e.key() == "Delete" {
-                                                e.prevent_default();
-                                                let mut new_text = String::with_capacity(text.len());
-                                                new_text.push_str(&text[..start]);
-                                                new_text.push_str(&text[end..]);
-                                                return vec![ Msg::UpdateText(new_text), Msg::AutoResize ];
-                                            } else if !arrow_keys.contains(&e.key().as_str()) {
-                                                // Block any other key (including typing, backspace, etc.)
-                                                e.prevent_default();
-                                                return vec![];
-                                            }
-                                        }
-
-                                        // Existing image-tag protection logic
-                                        let arrow_keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
-                                        if get_img_tag_id_at_cursor(&text, cursor_pos).is_some() && !arrow_keys.contains(&e.key().as_str()) {
-                                            e.prevent_default();
-                                            vec![]
-                                        } else if e.ctrl_key() && e.key() == "z" {
-                                            vec![Msg::Undo]
-                                        } else if e.ctrl_key() && e.key() == "y" {
-                                            vec![Msg::Redo]
-                                        } else {
-                                            vec![]
-                                        }
-                                    })}
-                                    onselect={link.callback(|e: Event| {
-                                        let id_opt = e.target()
-                                            .and_then(|t| t.dyn_into::<HtmlTextAreaElement>().ok())
-                                            .and_then(|textarea| {
-                                                let text = textarea.value();
-                                                let cursor_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                                                get_img_tag_id_at_cursor(&text, cursor_pos)
-                                            });
-                                        match id_opt {
-                                            Some(id) => Msg::OpenImageDialogWithId(id),
-                                            None => Msg::AutoResize,
-                                        }
-                                    })}
-                                    rows={1}
-                                    style="width: 100%; min-height: 40px; resize: none; overflow: hidden;"
-                                />
-                            </div>
-                            { image_dialog(component, link) }
-                        </>
-                    }
-                } else {
-                    html! { <div class="markdown-preview">{ Html::from_html_unchecked(preview_html.clone()) }</div> }
-                }
-            }
-        </div>
+/// Build the preview tab HTML wrapper.
+///
+/// Receives precomputed `preview_html` and returns the preview container.
+fn build_preview_tab(preview_html: AttrValue) -> Html {
+    html! {
+        <div class="markdown-preview">{ Html::from_html_unchecked(preview_html) }</div>
     }
 }
 
@@ -195,6 +231,7 @@ fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usiz
 /// 5. Replace `[img:<id>]` placeholders with `<img src="data:...">` for template images.
 /// 6. Replace `[ph:TITLE:BASE64]` placeholders by decoding BASE64 and inserting an escaped span.
 use uuid::Uuid;
+use yew::html::Scope;
 use yew::virtual_dom::AttrValue;
 
 
