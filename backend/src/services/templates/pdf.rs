@@ -1,4 +1,3 @@
-use actix_web::http::header::ContentLength;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use genpdf::elements::{Break, Image as PdfImage, LinearLayout, Paragraph};
@@ -11,6 +10,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
+/// Entry point for HTTP handler: keeps previous behavior.
 pub async fn process(template_id: actix_web::web::Path<String>) -> impl actix_web::Responder {
     let template_id = template_id.into_inner();
     match generate_pdf_from_template(&template_id) {
@@ -33,12 +33,31 @@ struct TextSegment {
     style: TextStyle,
 }
 
-/// Parses simple styles: \`***bolditalic***\`, \`**bold**\`, \`*italic*\`.
+/// Push segments into a Paragraph converting each `TextSegment` into a `StyledString`.
+/// Centralizes style mapping to avoid duplicated code across handlers.
+fn push_segments_into_paragraph(p: &mut Paragraph, segments: &[TextSegment]) {
+    for seg in segments {
+        let styled = match seg.style {
+            TextStyle::Regular => StyledString::new(seg.text.clone(), Style::new()),
+            TextStyle::Bold => StyledString::new(seg.text.clone(), Style::new().bold()),
+            TextStyle::Italic => StyledString::new(seg.text.clone(), Style::new().italic()),
+            TextStyle::BoldItalic => {
+                StyledString::new(seg.text.clone(), Style::new().bold().italic())
+            }
+        };
+        p.push(styled);
+    }
+}
+
+/// Parse simple markdown-like styles: \`***bolditalic***\`, \`**bold**\`, \`*italic*\`.
+/// - Returns a sequence of text segments annotated with style.
 fn parse_styles(line: &str) -> Vec<TextSegment> {
     let mut segments = Vec::new();
-    let mut i: usize = 0;
     let chars: Vec<char> = line.chars().collect();
-    while i < ContentLength::from(chars.len()) {
+    let mut i: usize = 0;
+
+    while i < chars.len() {
+        // BoldItalic `***...***`
         if i + 2 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' && chars[i + 2] == '*' {
             let mut j = i + 3;
             while j + 2 < chars.len() {
@@ -54,13 +73,18 @@ fn parse_styles(line: &str) -> Vec<TextSegment> {
                 j += 1;
             }
             if i <= chars.len() && segments.last().map(|s| s.text.len()).unwrap_or(0) == 0 {
+                // unmatched sequence -> literal
                 segments.push(TextSegment {
                     text: "***".to_string(),
                     style: TextStyle::Regular,
                 });
                 i += 3;
             }
-        } else if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+            continue;
+        }
+
+        // Bold `**...**`
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
             let mut j = i + 2;
             while j + 1 < chars.len() {
                 if chars[j] == '*' && chars[j + 1] == '*' {
@@ -81,7 +105,11 @@ fn parse_styles(line: &str) -> Vec<TextSegment> {
                 });
                 i += 2;
             }
-        } else if chars[i] == '*' {
+            continue;
+        }
+
+        // Italic `*...*`
+        if chars[i] == '*' {
             let mut j = i + 1;
             while j < chars.len() {
                 if chars[j] == '*' {
@@ -102,19 +130,22 @@ fn parse_styles(line: &str) -> Vec<TextSegment> {
                 });
                 i += 1;
             }
-        } else {
-            let mut j = i;
-            while j < chars.len() && chars[j] != '*' {
-                j += 1;
-            }
-            let text: String = chars[i..j].iter().collect();
-            segments.push(TextSegment {
-                text,
-                style: TextStyle::Regular,
-            });
-            i = j;
+            continue;
         }
+
+        // Plain text until next '*'
+        let mut j = i;
+        while j < chars.len() && chars[j] != '*' {
+            j += 1;
+        }
+        let text: String = chars[i..j].iter().collect();
+        segments.push(TextSegment {
+            text,
+            style: TextStyle::Regular,
+        });
+        i = j;
     }
+
     segments
 }
 
@@ -145,14 +176,12 @@ fn push_styled_text_with_breaks_to_doc(doc: &mut Document, text: &str) {
     }
 }
 
-/// Generates a PDF from the template \`template_id\` and saves it to \`output.pdf\`.
-pub fn generate_pdf_from_template(template_id: &str) -> Result<(), Box<dyn Error>> {
-    let conn = Connection::open("templify.sqlite")?;
-    // 1) Retrieve template text
-    let mut stmt = conn.prepare("SELECT text FROM templates WHERE id = ?1")?;
-    let template_text: String = stmt.query_row([template_id], |row| row.get(0))?;
-
-    // 2) Load images (base64 -> bytes)
+/// Load images from DB for a template.
+/// Returns a map id -> raw bytes.
+fn load_images(
+    conn: &Connection,
+    template_id: &str,
+) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
     let mut images_stmt = conn.prepare("SELECT id, base64 FROM images WHERE template_id = ?1")?;
     let mut rows = images_stmt.query([template_id])?;
     let mut images_map: HashMap<String, Vec<u8>> = HashMap::new();
@@ -163,112 +192,124 @@ pub fn generate_pdf_from_template(template_id: &str) -> Result<(), Box<dyn Error
             images_map.insert(id, bytes);
         }
     }
+    Ok(images_map)
+}
 
-    // 3) Configure document
+/// Configure and return a genpdf Document with font and decorator set.
+fn configure_document() -> Result<Document, Box<dyn Error>> {
     let font_family = load_font()?;
     let mut doc = Document::new(font_family);
     doc.set_title("Salida desde plantilla");
     let mut decorator = genpdf::SimplePageDecorator::new();
     decorator.set_margins(10);
     doc.set_page_decorator(decorator);
+    Ok(doc)
+}
+
+/// Handle a list item line starting with \- .
+fn handle_list_item(doc: &mut Document, item_text: &str) {
+    let segments = parse_styles(item_text);
+    let mut p = Paragraph::new("");
+    p.push(StyledString::new("• ", Style::new()));
+    push_segments_into_paragraph(&mut p, &segments);
+    let mut layout = LinearLayout::vertical();
+    layout.push(p);
+    doc.push(layout);
+}
+
+/// Handle an image placeholder line like \`[img:ID]\`.
+fn handle_image_line(
+    line: &str,
+    images_map: &HashMap<String, Vec<u8>>,
+    temp_files: &mut Vec<NamedTempFile>,
+    doc: &mut Document,
+) -> Result<(), Box<dyn Error>> {
+    let inner = &line[5..line.len() - 1];
+    if let Some(bytes) = images_map.get(inner) {
+        let mut tmp = NamedTempFile::new()?;
+        tmp.write_all(bytes)?;
+        let path: PathBuf = tmp.path().to_path_buf();
+        let mut img_elem = PdfImage::from_path(path)?;
+        img_elem.set_dpi(150.0);
+        temp_files.push(tmp);
+        doc.push(img_elem);
+    } else {
+        doc.push(Paragraph::new(format!("[imagen no encontrada: {}]", inner)));
+    }
+    Ok(())
+}
+
+/// Handle a placeholder line like \`[ph:...:BASE64]\`.
+fn handle_placeholder_line(line: &str, doc: &mut Document) {
+    let inner = &line[4..line.len() - 1];
+    if let Some(decoded) = decode_placeholder(inner) {
+        push_styled_text_with_breaks_to_doc(doc, &decoded);
+    } else {
+        doc.push(Paragraph::new("[invalid placeholder]"));
+    }
+}
+
+/// Handle a normal text line (may contain inline styles).
+fn handle_normal_line(line: &str, doc: &mut Document) {
+    let segments = parse_styles(line);
+    let mut p = Paragraph::new("");
+    push_segments_into_paragraph(&mut p, &segments);
+    doc.push(p);
+}
+
+/// Generates a PDF from the template \`template_id\` and saves it to \`output.pdf\`.
+/// This function orchestrates reading the template, images and streaming the processed lines to the document.
+pub fn generate_pdf_from_template(template_id: &str) -> Result<(), Box<dyn Error>> {
+    let conn = Connection::open("templify.sqlite")?;
+
+    // 1) Retrieve template text
+    let mut stmt = conn.prepare("SELECT text FROM templates WHERE id = ?1")?;
+    let template_text: String = stmt.query_row([template_id], |row| row.get(0))?;
+
+    // 2) Load images
+    let images_map = load_images(&conn, template_id)?;
+
+    // 3) Configure document
+    let mut doc = configure_document()?;
 
     // Keep temporary files alive until rendering finishes
     let mut temp_files: Vec<NamedTempFile> = Vec::new();
 
-    // 4) Process lines \- use \`lines()\` but DO NOT trim so empty lines are preserved
+    // 4) Process lines - DO NOT trim to preserve empty lines
     for raw_line in template_text.lines() {
-        // preserve blank lines: represent as a Break
-        let line = raw_line; // do not call \`trim()\`
+        let line = raw_line;
         if line.is_empty() {
             doc.push(Break::new(1));
             continue;
         }
 
-        // separator `--`
-        if line == "--" {
-            doc.push(Paragraph::new("------------------------------"));
-            continue;
-        }
-
-        // List item
         if line.starts_with("- ") {
-            let mut layout = LinearLayout::vertical();
-            let item_text = &line[2..];
-            let segments = parse_styles(item_text);
-            let mut p = Paragraph::new("");
-            // list bullet prefix
-            p.push(StyledString::new("• ", Style::new()));
-            for seg in segments {
-                let styled = match seg.style {
-                    TextStyle::Regular => StyledString::new(seg.text, Style::new()),
-                    TextStyle::Bold => StyledString::new(seg.text, Style::new().bold()),
-                    TextStyle::Italic => StyledString::new(seg.text, Style::new().italic()),
-                    TextStyle::BoldItalic => {
-                        StyledString::new(seg.text, Style::new().bold().italic())
-                    }
-                };
-                p.push(styled);
-            }
-            layout.push(p);
-            doc.push(layout);
+            handle_list_item(&mut doc, &line[2..]);
             continue;
         }
 
-        // Image: `[img:ID]`
         if line.starts_with("[img:") && line.ends_with(']') {
-            let inner = &line[5..line.len() - 1];
-            if let Some(bytes) = images_map.get(inner) {
-                let mut tmp = NamedTempFile::new()?;
-                tmp.write_all(bytes)?;
-                // keep tmp so it is not removed before rendering
-                let path: PathBuf = tmp.path().to_path_buf();
-                // create image element from path
-                let mut img_elem = PdfImage::from_path(path)?;
-                img_elem.set_dpi(150.0);
-                // push tmp into vector to keep it alive
-                temp_files.push(tmp);
-                doc.push(img_elem);
-            } else {
-                doc.push(Paragraph::new(format!("[imagen no encontrada: {}]", inner)));
-            }
+            handle_image_line(line, &images_map, &mut temp_files, &mut doc)?;
             continue;
         }
 
-        // Placeholder: `[ph:...:BASE64]`
         if line.starts_with("[ph:") && line.ends_with(']') {
-            let inner = &line[4..line.len() - 1];
-            if let Some(decoded) = decode_placeholder(inner) {
-                // decoded may contain multiple lines: preserve them
-                push_styled_text_with_breaks_to_doc(&mut doc, &decoded);
-            } else {
-                doc.push(Paragraph::new("[invalid placeholder]"));
-            }
+            handle_placeholder_line(line, &mut doc);
             continue;
         }
 
-        // Normal line (single logical line): may still contain no internal \n
-        let segments = parse_styles(line);
-        let mut p = Paragraph::new("");
-        for seg in segments {
-            let styled = match seg.style {
-                TextStyle::Regular => StyledString::new(seg.text, Style::new()),
-                TextStyle::Bold => StyledString::new(seg.text, Style::new().bold()),
-                TextStyle::Italic => StyledString::new(seg.text, Style::new().italic()),
-                TextStyle::BoldItalic => StyledString::new(seg.text, Style::new().bold().italic()),
-            };
-            p.push(styled);
-        }
-        doc.push(p);
+        handle_normal_line(line, &mut doc);
     }
 
     // 5) Render to file
     let mut out_file = std::fs::File::create("output.pdf")?;
     doc.render(&mut out_file)?;
 
-    // temp_files removed on function exit (NamedTempFile cleanup)
+    // temp_files dropped and cleaned up here
     Ok(())
 }
 
+/// Find next HTML-like tag \`<b>\` or \`<i>\` in text, returning tag name and index.
 fn find_next_tag(text: &str) -> Option<(&str, usize)> {
     let b_pos = text.find("<b>");
     let i_pos = text.find("<i>");
@@ -281,12 +322,13 @@ fn find_next_tag(text: &str) -> Option<(&str, usize)> {
     }
 }
 
+/// Parse a single logical line containing \`<b>...</b>\` and/or \`<i>...</i>\` tags into a Paragraph.
+/// This preserves remaining plain text and gracefully handles missing closing tags.
 fn parse_styled_paragraph(text: &str) -> Paragraph {
     let mut paragraph = Paragraph::new("");
     let mut rest = text;
 
     while let Some((next_tag, start)) = find_next_tag(rest) {
-        // push plain text before the tag
         if start > 0 {
             paragraph.push(&rest[..start]);
         }
@@ -297,7 +339,6 @@ fn parse_styled_paragraph(text: &str) -> Paragraph {
             _ => unreachable!(),
         };
 
-        // find closing tag after the opening tag
         if let Some(rel_end) = rest[start + tag_open.len()..].find(tag_close) {
             let styled_text = &rest[start + tag_open.len()..start + tag_open.len() + rel_end];
             let styled = match next_tag {
@@ -306,16 +347,14 @@ fn parse_styled_paragraph(text: &str) -> Paragraph {
                 _ => StyledString::new(styled_text, Style::new()),
             };
             paragraph.push(styled);
-            // advance rest past the closing tag
             rest = &rest[start + tag_open.len() + rel_end + tag_close.len()..];
         } else {
-            // no closing tag found: push the rest as plain text and finish
+            // If no closing tag, push remainder as plain text
             paragraph.push(&rest[start..]);
             return paragraph;
         }
     }
 
-    // push any remaining plain text
     if !rest.is_empty() {
         paragraph.push(rest);
     }
