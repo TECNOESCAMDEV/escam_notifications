@@ -168,8 +168,14 @@ fn decode_placeholder(ph: &str) -> Option<String> {
 
 /// Load the font family (adjust path/name if needed).
 fn load_font() -> Result<genpdf::fonts::FontFamily<genpdf::fonts::FontData>, Box<dyn Error>> {
+    // Try to load Arial (if the Arial family TTFs were added to ./fonts).
+    // If that fails, fall back to LiberationSans located in the same directory.
+    if let Ok(family) = genpdf::fonts::from_files("./fonts", "Arial", None) {
+        return Ok(family);
+    }
     genpdf::fonts::from_files("./fonts", "LiberationSans", None).map_err(Into::into)
 }
+
 
 /// Push text that may contain internal newlines into \`doc\`, preserving breaks.
 fn push_styled_text_with_breaks_to_doc(doc: &mut Document, text: &str) {
@@ -205,7 +211,16 @@ fn load_images(
 fn configure_document() -> Result<Document, Box<dyn Error>> {
     let font_family = load_font()?;
     let mut doc = Document::new(font_family);
-    doc.set_title("Salida desde plantilla");
+    doc.set_title("Output from template");
+
+    // Approximate the preview's `font-size: 11px`: 11px ≈ 8.25pt (1px = 0.75pt).
+    // Use `f32` for the multiplication so `round()` is unambiguous, then cast to `u8`.
+    let font_size_pt: u8 = (11.0_f32 * 0.75_f32).round() as u8;
+    doc.set_font_size(font_size_pt);
+
+    // `set_line_spacing` expects an `f32`.
+    doc.set_line_spacing(1.0f64);
+
     let mut decorator = genpdf::SimplePageDecorator::new();
     decorator.set_margins(10);
     doc.set_page_decorator(decorator);
