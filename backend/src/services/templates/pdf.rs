@@ -234,13 +234,11 @@ fn handle_image_line(
 ) -> Result<(), Box<dyn Error>> {
     let inner = &line[5..line.len() - 1];
     if let Some(bytes) = images_map.get(inner) {
-        // Compute target pixel width from page width and margins (all in f64)
         let margin_in = MARGIN_MM / 25.4_f64;
         let content_width_in = PAGE_WIDTH_INCH - 2.0 * margin_in;
         let target_px_f = content_width_in * IMAGE_DPI;
         let target_px: u32 = target_px_f.max(1.0) as u32;
 
-        // Decode image and resize preserving aspect ratio
         let img = load_from_memory(bytes)?;
         let (orig_w, orig_h) = img.dimensions();
         let new_w = if orig_w > target_px {
@@ -255,24 +253,25 @@ fn handle_image_line(
             img.resize(new_w, new_h, FilterType::Lanczos3)
         };
 
-        // Convert to raw RGBA bytes and encode with png crate
+        // Aplanar canal alfa sobre fondo blanco y convertir a RGB
         let rgba = resized.to_rgba8();
         let (w, h) = rgba.dimensions();
-        let raw = rgba.into_raw();
+        let mut background = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
+        image::imageops::overlay(&mut background, &rgba, 0, 0);
+        let rgb_image = DynamicImage::ImageRgba8(background).to_rgb8();
+        let raw = rgb_image.into_raw();
 
         let mut tmp = NamedTempFile::new()?;
         {
             let file = tmp.as_file_mut();
             let mut encoder = PngEncoder::new(file, w, h);
-            encoder.set_color(PngColorType::Rgba);
+            encoder.set_color(PngColorType::Rgb);
             encoder.set_depth(PngBitDepth::Eight);
             let mut writer = encoder.write_header()?;
             writer.write_image_data(&raw)?;
         }
 
         let path: PathBuf = tmp.path().to_path_buf();
-
-        // Create genpdf image element and set DPI (expects f64)
         let mut img_elem = PdfImage::from_path(path)?;
         img_elem.set_dpi(IMAGE_DPI);
         temp_files.push(tmp);
