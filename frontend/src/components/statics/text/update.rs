@@ -404,6 +404,19 @@ pub fn update(
             set_window_dirty_flag(component);
             true
         }
+        Msg::OpenPdf => {
+            if let Some(template) = &component.template {
+                if !template.id.is_empty() {
+                    component.pdf_url = Some(format!("/api/templates/pdf/{}", template.id));
+                    open_top_sheet(component.pdf_viewer_dialog_ref.clone());
+                } else {
+                    show_toast("Guarda la plantilla antes de generar el PDF.");
+                }
+            } else {
+                show_toast("No hay plantilla cargada.");
+            }
+            true
+        }
     }
 }
 

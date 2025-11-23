@@ -37,4 +37,5 @@ pub enum Msg {
     SetTemplate(Option<common::model::template::Template>),
     InsertCsvColumnPlaceholder(ColumnCheck),
     CsvColumnsUpdated(Vec<ColumnCheck>),
+    OpenPdf,
 }

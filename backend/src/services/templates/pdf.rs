@@ -1,3 +1,7 @@
+use actix_files::NamedFile;
+use actix_web::http::header::{ContentDisposition, DispositionParam, DispositionType};
+use actix_web::mime;
+use actix_web::{web, Error as ActixError, HttpRequest, Responder};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use genpdf::elements::{Break, Image as PdfImage, LinearLayout, Paragraph};
@@ -9,24 +13,15 @@ use png::{BitDepth as PngBitDepth, ColorType as PngColorType, Encoder as PngEnco
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
+/// Constants and helpers preserved from previous implementation
 const PAGE_WIDTH_INCH: f64 = 8.5;
 const MARGIN_MM: f64 = 10.0;
 const IMAGE_DPI: f64 = 150.0;
 
-/// Entry point for HTTP handler: keeps previous behavior.
-pub async fn process(template_id: actix_web::web::Path<String>) -> impl actix_web::Responder {
-    let template_id = template_id.into_inner();
-    match generate_pdf_from_template(&template_id) {
-        Ok(_) => actix_web::HttpResponse::Ok().body("PDF generated successfully"),
-        Err(e) => actix_web::HttpResponse::ServiceUnavailable()
-            .body(format!("PDF generation failed: {}", e)),
-    }
-}
-
-/// Fragments with detected styling.
 enum TextStyle {
     Regular,
     Bold,
@@ -39,8 +34,91 @@ struct TextSegment {
     style: TextStyle,
 }
 
-/// Push segments into a Paragraph converting each `TextSegment` into a `StyledString`.
-/// Centralizes style mapping to avoid duplicated code across handlers.
+/// Actix handler: generates and serves the PDF as `inline`.
+pub async fn process(
+    template_id: web::Path<String>,
+    req: HttpRequest,
+) -> Result<impl Responder, ActixError> {
+    let id = template_id.into_inner();
+    // Safe filename: use the id + .pdf
+    let filename = format!("{}.pdf", id);
+    let file_path = Path::new("./pdfs").join(&filename);
+
+    // Generate the PDF in `./pdfs/<id>.pdf`
+    if let Err(e) = generate_pdf_from_template_to_path(&id, &file_path) {
+        // Map to HTTP error
+        return Err(actix_web::error::ErrorServiceUnavailable(format!(
+            "PDF generation failed: {}",
+            e
+        )));
+    }
+
+    // Serve the generated PDF
+    if file_path.exists() {
+        let named_file = NamedFile::open_async(&file_path)
+            .await?
+            .set_content_type(mime::APPLICATION_PDF)
+            .set_content_disposition(ContentDisposition {
+                disposition: DispositionType::Inline,
+                parameters: vec![DispositionParam::Filename(filename)],
+            });
+        Ok(named_file.into_response(&req))
+    } else {
+        Err(actix_web::error::ErrorNotFound("File not found"))
+    }
+}
+
+
+/// Generates the PDF and writes it to `output_path`.
+pub fn generate_pdf_from_template_to_path(
+    template_id: &str,
+    output_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let conn = Connection::open("templify.sqlite")?;
+
+    let mut stmt = conn.prepare("SELECT text FROM templates WHERE id = ?1")?;
+    let template_text: String = stmt.query_row([template_id], |row| row.get(0))?;
+
+    let images_map = load_images(&conn, template_id)?;
+
+    let mut doc = configure_document()?;
+    let mut temp_files: Vec<NamedTempFile> = Vec::new();
+
+    for raw_line in template_text.lines() {
+        let line = raw_line;
+        if line.is_empty() {
+            doc.push(Break::new(1));
+            continue;
+        }
+
+        if line.starts_with("- ") {
+            handle_list_item(&mut doc, &line[2..]);
+            continue;
+        }
+
+        if line.starts_with("[img:") && line.ends_with(']') {
+            handle_image_line(line, &images_map, &mut temp_files, &mut doc)?;
+            continue;
+        }
+
+        if line.starts_with("[ph:") && line.ends_with(']') {
+            handle_placeholder_line(line, &mut doc);
+            continue;
+        }
+
+        handle_normal_line(line, &mut doc);
+    }
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut out_file = fs::File::create(output_path)?;
+    doc.render(&mut out_file)?;
+
+    Ok(())
+}
+
 fn push_segments_into_paragraph(p: &mut Paragraph, segments: &[TextSegment]) {
     for seg in segments {
         let styled = match seg.style {
@@ -55,8 +133,6 @@ fn push_segments_into_paragraph(p: &mut Paragraph, segments: &[TextSegment]) {
     }
 }
 
-/// Parse simple markdown-like styles: \`***bolditalic***\`, \`**bold**\`, \`*italic*\`.
-/// - Returns a sequence of text segments annotated with style.
 fn parse_styles(line: &str) -> Vec<TextSegment> {
     let mut segments = Vec::new();
     let chars: Vec<char> = line.chars().collect();
@@ -79,7 +155,6 @@ fn parse_styles(line: &str) -> Vec<TextSegment> {
                 j += 1;
             }
             if i <= chars.len() && segments.last().map(|s| s.text.len()).unwrap_or(0) == 0 {
-                // unmatched sequence -> literal
                 segments.push(TextSegment {
                     text: "***".to_string(),
                     style: TextStyle::Regular,
@@ -155,7 +230,6 @@ fn parse_styles(line: &str) -> Vec<TextSegment> {
     segments
 }
 
-/// Decodes the last base64 segment in \`[ph:...:BASE64]\`.
 fn decode_placeholder(ph: &str) -> Option<String> {
     let parts: Vec<&str> = ph.split(':').collect();
     parts.last().and_then(|last| {
@@ -166,18 +240,13 @@ fn decode_placeholder(ph: &str) -> Option<String> {
     })
 }
 
-/// Load the font family (adjust path/name if needed).
 fn load_font() -> Result<genpdf::fonts::FontFamily<genpdf::fonts::FontData>, Box<dyn Error>> {
-    // Try to load Arial (if the Arial family TTFs were added to ./fonts).
-    // If that fails, fall back to LiberationSans located in the same directory.
     if let Ok(family) = genpdf::fonts::from_files("./fonts", "Arial", None) {
         return Ok(family);
     }
     genpdf::fonts::from_files("./fonts", "LiberationSans", None).map_err(Into::into)
 }
 
-
-/// Push text that may contain internal newlines into \`doc\`, preserving breaks.
 fn push_styled_text_with_breaks_to_doc(doc: &mut Document, text: &str) {
     let lines: Vec<&str> = text.split('\n').collect();
     for (i, line) in lines.iter().enumerate() {
@@ -188,8 +257,6 @@ fn push_styled_text_with_breaks_to_doc(doc: &mut Document, text: &str) {
     }
 }
 
-/// Load images from DB for a template.
-/// Returns a map id -> raw bytes.
 fn load_images(
     conn: &Connection,
     template_id: &str,
@@ -207,18 +274,14 @@ fn load_images(
     Ok(images_map)
 }
 
-/// Configure and return a genpdf Document with font and decorator set.
 fn configure_document() -> Result<Document, Box<dyn Error>> {
     let font_family = load_font()?;
     let mut doc = Document::new(font_family);
     doc.set_title("Output from template");
 
-    // Approximate the preview's `font-size: 11px`: 11px ≈ 8.25pt (1px = 0.75pt).
-    // Use `f32` for the multiplication so `round()` is unambiguous, then cast to `u8`.
     let font_size_pt: u8 = (11.0_f32 * 0.75_f32).round() as u8;
     doc.set_font_size(font_size_pt);
 
-    // `set_line_spacing` expects an `f32`.
     doc.set_line_spacing(1.0f64);
 
     let mut decorator = genpdf::SimplePageDecorator::new();
@@ -227,7 +290,6 @@ fn configure_document() -> Result<Document, Box<dyn Error>> {
     Ok(doc)
 }
 
-/// Handle a list item line starting with \- .
 fn handle_list_item(doc: &mut Document, item_text: &str) {
     let segments = parse_styles(item_text);
     let mut p = Paragraph::new("");
@@ -238,9 +300,6 @@ fn handle_list_item(doc: &mut Document, item_text: &str) {
     doc.push(layout);
 }
 
-/// Handle an image placeholder line like \`[img:ID]\`.
-/// Loads image bytes, rescales to fit the printable width of a Letter page
-/// preserving aspect ratio, writes a temporary PNG and embeds it.
 fn handle_image_line(
     line: &str,
     images_map: &HashMap<String, Vec<u8>>,
@@ -253,10 +312,8 @@ fn handle_image_line(
         let content_width_in = PAGE_WIDTH_INCH - 2.0 * margin_in;
         let content_target_px = content_width_in * IMAGE_DPI;
 
-        // Simulate front-end CSS limits: max-width:200px; max-height:200px;
         let css_max_width_px: f64 = 200.0;
         let css_max_height_px: f64 = 200.0;
-        // Convert CSS px -> image pixels at IMAGE_DPI assuming 96 CSS px per inch
         let css_to_px = IMAGE_DPI / 96.0;
         let css_max_width_target_px = css_max_width_px * css_to_px;
         let css_max_height_target_px = css_max_height_px * css_to_px;
@@ -266,12 +323,10 @@ fn handle_image_line(
         let orig_w_f = orig_w as f64;
         let orig_h_f = orig_h as f64;
 
-        // Compute scales (<= 1.0) for each constraint
         let scale_by_content = (content_target_px / orig_w_f).min(1.0);
         let scale_by_css_w = (css_max_width_target_px / orig_w_f).min(1.0);
         let scale_by_css_h = (css_max_height_target_px / orig_h_f).min(1.0);
 
-        // Final scale is the most restrictive (smallest) of the three
         let scale = scale_by_content.min(scale_by_css_w).min(scale_by_css_h);
 
         let resized: DynamicImage = if scale >= 1.0 {
@@ -282,7 +337,6 @@ fn handle_image_line(
             img.resize(new_w, new_h, FilterType::Lanczos3)
         };
 
-        // Flatten alpha channel over white background and convert to RGB
         let rgba = resized.to_rgba8();
         let (w, h) = rgba.dimensions();
         let mut background = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
@@ -311,7 +365,6 @@ fn handle_image_line(
     Ok(())
 }
 
-/// Handle a placeholder line like \`[ph:...:BASE64]\`.
 fn handle_placeholder_line(line: &str, doc: &mut Document) {
     let inner = &line[4..line.len() - 1];
     if let Some(decoded) = decode_placeholder(inner) {
@@ -321,7 +374,6 @@ fn handle_placeholder_line(line: &str, doc: &mut Document) {
     }
 }
 
-/// Handle a normal text line (may contain inline styles).
 fn handle_normal_line(line: &str, doc: &mut Document) {
     let segments = parse_styles(line);
     let mut p = Paragraph::new("");
@@ -329,59 +381,6 @@ fn handle_normal_line(line: &str, doc: &mut Document) {
     doc.push(p);
 }
 
-/// Generates a PDF from the template \`template_id\` and saves it to \`output.pdf\`.
-/// This function orchestrates reading the template, images and streaming the processed lines to the document.
-pub fn generate_pdf_from_template(template_id: &str) -> Result<(), Box<dyn Error>> {
-    let conn = Connection::open("templify.sqlite")?;
-
-    // 1) Retrieve template text
-    let mut stmt = conn.prepare("SELECT text FROM templates WHERE id = ?1")?;
-    let template_text: String = stmt.query_row([template_id], |row| row.get(0))?;
-
-    // 2) Load images
-    let images_map = load_images(&conn, template_id)?;
-
-    // 3) Configure document
-    let mut doc = configure_document()?;
-
-    // Keep temporary files alive until rendering finishes
-    let mut temp_files: Vec<NamedTempFile> = Vec::new();
-
-    // 4) Process lines - DO NOT trim to preserve empty lines
-    for raw_line in template_text.lines() {
-        let line = raw_line;
-        if line.is_empty() {
-            doc.push(Break::new(1));
-            continue;
-        }
-
-        if line.starts_with("- ") {
-            handle_list_item(&mut doc, &line[2..]);
-            continue;
-        }
-
-        if line.starts_with("[img:") && line.ends_with(']') {
-            handle_image_line(line, &images_map, &mut temp_files, &mut doc)?;
-            continue;
-        }
-
-        if line.starts_with("[ph:") && line.ends_with(']') {
-            handle_placeholder_line(line, &mut doc);
-            continue;
-        }
-
-        handle_normal_line(line, &mut doc);
-    }
-
-    // 5) Render to file
-    let mut out_file = std::fs::File::create("output.pdf")?;
-    doc.render(&mut out_file)?;
-
-    // temp_files dropped and cleaned up here
-    Ok(())
-}
-
-/// Find next HTML-like tag \`<b>\` or \`<i>\` in text, returning tag name and index.
 fn find_next_tag(text: &str) -> Option<(&str, usize)> {
     let b_pos = text.find("<b>");
     let i_pos = text.find("<i>");
@@ -394,8 +393,6 @@ fn find_next_tag(text: &str) -> Option<(&str, usize)> {
     }
 }
 
-/// Parse a single logical line containing \`<b>...</b>\` and/or \`<i>...</i>\` tags into a Paragraph.
-/// This preserves remaining plain text and gracefully handles missing closing tags.
 fn parse_styled_paragraph(text: &str) -> Paragraph {
     let mut paragraph = Paragraph::new("");
     let mut rest = text;
@@ -421,7 +418,6 @@ fn parse_styled_paragraph(text: &str) -> Paragraph {
             paragraph.push(styled);
             rest = &rest[start + tag_open.len() + rel_end + tag_close.len()..];
         } else {
-            // If no closing tag, push remainder as plain text
             paragraph.push(&rest[start..]);
             return paragraph;
         }

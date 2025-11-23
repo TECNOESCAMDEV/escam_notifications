@@ -64,6 +64,7 @@ fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
             { icon_button("format_bold", "Negrita+Cursiva", make_style_callback(link, "bolditalic"), true) }
             { icon_button("format_list_bulleted", "Items", make_style_callback(link, "bulleted_list"), false) }
             { icon_button("image", "Imagen", link.callback(|_| Msg::OpenFileDialog), false) }
+            { icon_button("picture_as_pdf", "PDF", link.callback(|_| Msg::OpenPdf), false) }
             { icon_button("save", "Guardar", link.callback(|_| Msg::Save), false) }
             <div>
                 <CsvDataSourceComponent
@@ -217,6 +218,7 @@ fn build_editor_tab(component: &StaticTextComponent, link: &Scope<StaticTextComp
                 />
             </div>
             { image_dialog(component, link) }
+            { pdf_dialog(component, link) }
         </>
     }
 }
@@ -261,6 +263,7 @@ fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usiz
     None
 }
 
+use crate::components::statics::text::dialogs::pdf::pdf_dialog;
 /// Produces the HTML used by the preview tab.
 ///
 /// Pipeline:
@@ -275,7 +278,6 @@ fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usiz
 use uuid::Uuid;
 use yew::html::Scope;
 use yew::virtual_dom::AttrValue;
-
 
 /// Normalize line endings and trim invisible characters at the start.
 ///

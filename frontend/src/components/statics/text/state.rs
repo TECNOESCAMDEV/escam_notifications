@@ -26,8 +26,10 @@ pub struct StaticTextComponent {
     pub textarea_ref: NodeRef,
     pub file_input_ref: NodeRef,
     pub image_dialog_ref: NodeRef,
+    pub pdf_viewer_dialog_ref: NodeRef,
     pub template: Option<Template>,
     pub selected_image_id: Option<String>,
+    pub pdf_url: Option<String>,
     pub loaded: bool,
     pub original_md5: Option<String>,
 }
@@ -44,8 +46,10 @@ impl StaticTextComponent {
             textarea_ref: Default::default(),
             file_input_ref: Default::default(),
             image_dialog_ref: Default::default(),
+            pdf_viewer_dialog_ref: Default::default(),
             template: None,
             selected_image_id: None,
+            pdf_url: None,
             loaded: false,
             original_md5: None,
         }
