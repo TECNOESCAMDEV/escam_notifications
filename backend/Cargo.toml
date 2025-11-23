@@ -23,6 +23,8 @@ md5 = "0.8.0"
 base64 = "0.22.1"
 genpdf = { version = "0.2", features = ["images"] }
 tempfile = "3.23.0"
+image = { version = "0.25.9", features = ["png", "jpeg"] }
+png = "0.18.0"
 
 [build-dependencies]
 fs_extra = "1.3.0"

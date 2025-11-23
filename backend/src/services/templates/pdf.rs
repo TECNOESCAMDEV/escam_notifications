@@ -3,12 +3,18 @@ use base64::Engine;
 use genpdf::elements::{Break, Image as PdfImage, LinearLayout, Paragraph};
 use genpdf::style::{Style, StyledString};
 use genpdf::Document;
+use image::imageops::FilterType;
+use image::{load_from_memory, DynamicImage, GenericImageView};
+use png::{BitDepth as PngBitDepth, ColorType as PngColorType, Encoder as PngEncoder};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::error::Error;
-use std::io::Write;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
+
+const PAGE_WIDTH_INCH: f64 = 8.5;
+const MARGIN_MM: f64 = 10.0;
+const IMAGE_DPI: f64 = 150.0;
 
 /// Entry point for HTTP handler: keeps previous behavior.
 pub async fn process(template_id: actix_web::web::Path<String>) -> impl actix_web::Responder {
@@ -218,6 +224,8 @@ fn handle_list_item(doc: &mut Document, item_text: &str) {
 }
 
 /// Handle an image placeholder line like \`[img:ID]\`.
+/// Loads image bytes, rescales to fit the printable width of a Letter page
+/// preserving aspect ratio, writes a temporary PNG and embeds it.
 fn handle_image_line(
     line: &str,
     images_map: &HashMap<String, Vec<u8>>,
@@ -226,11 +234,47 @@ fn handle_image_line(
 ) -> Result<(), Box<dyn Error>> {
     let inner = &line[5..line.len() - 1];
     if let Some(bytes) = images_map.get(inner) {
+        // Compute target pixel width from page width and margins (all in f64)
+        let margin_in = MARGIN_MM / 25.4_f64;
+        let content_width_in = PAGE_WIDTH_INCH - 2.0 * margin_in;
+        let target_px_f = content_width_in * IMAGE_DPI;
+        let target_px: u32 = target_px_f.max(1.0) as u32;
+
+        // Decode image and resize preserving aspect ratio
+        let img = load_from_memory(bytes)?;
+        let (orig_w, orig_h) = img.dimensions();
+        let new_w = if orig_w > target_px {
+            target_px
+        } else {
+            orig_w
+        };
+        let new_h = ((orig_h as f64) * (new_w as f64) / (orig_w as f64)).max(1.0) as u32;
+        let resized: DynamicImage = if new_w == orig_w && new_h == orig_h {
+            img
+        } else {
+            img.resize(new_w, new_h, FilterType::Lanczos3)
+        };
+
+        // Convert to raw RGBA bytes and encode with png crate
+        let rgba = resized.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let raw = rgba.into_raw();
+
         let mut tmp = NamedTempFile::new()?;
-        tmp.write_all(bytes)?;
+        {
+            let file = tmp.as_file_mut();
+            let mut encoder = PngEncoder::new(file, w, h);
+            encoder.set_color(PngColorType::Rgba);
+            encoder.set_depth(PngBitDepth::Eight);
+            let mut writer = encoder.write_header()?;
+            writer.write_image_data(&raw)?;
+        }
+
         let path: PathBuf = tmp.path().to_path_buf();
+
+        // Create genpdf image element and set DPI (expects f64)
         let mut img_elem = PdfImage::from_path(path)?;
-        img_elem.set_dpi(150.0);
+        img_elem.set_dpi(IMAGE_DPI);
         temp_files.push(tmp);
         doc.push(img_elem);
     } else {
