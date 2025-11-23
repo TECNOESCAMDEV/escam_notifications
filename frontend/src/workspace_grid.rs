@@ -20,14 +20,14 @@ impl Component for WorkspaceGrid {
     fn view(&self, ctx: &Context<Self>) -> Html {
         let props = ctx.props();
         let style = format!(
-            "display: grid; \
-             grid-template-columns: repeat({}, 1fr); \
-             grid-template-rows: repeat({}, 1fr); \
-             width: 21.59cm; \
-             height: 27.94cm; \
-             margin: auto; \
-             padding: 2.54cm; \
-             background: white; \
+            "display: grid;
+             grid-template-columns: repeat({}, 1fr);
+             grid-template-rows: repeat({}, 1fr);
+             width: 19.59cm;
+             height: 27.94cm;
+             margin: auto;
+             padding: 10mm;
+             background: white;
              box-shadow: 0 0 8px #ccc;",
             props.columns, props.rows
         );
