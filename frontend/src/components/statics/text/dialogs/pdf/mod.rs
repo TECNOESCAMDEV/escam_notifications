@@ -13,7 +13,7 @@ pub fn pdf_dialog(component: &StaticTextComponent, link: &Scope<StaticTextCompon
         })
     };
 
-    // Callback para cuando el iframe termine de cargar -> enviar Msg::PdfLoaded
+    // Callback for when the iframe finishes loading -> send Msg::PdfLoaded
     let on_iframe_load = {
         let cb_link = link.clone();
         Callback::from(move |_: Event| {
