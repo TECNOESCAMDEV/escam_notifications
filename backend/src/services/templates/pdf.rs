@@ -241,19 +241,18 @@ fn handle_image_line(
 
         let img = load_from_memory(bytes)?;
         let (orig_w, orig_h) = img.dimensions();
-        let new_w = if orig_w > target_px {
-            target_px
-        } else {
-            orig_w
-        };
-        let new_h = ((orig_h as f64) * (new_w as f64) / (orig_w as f64)).max(1.0) as u32;
-        let resized: DynamicImage = if new_w == orig_w && new_h == orig_h {
+
+        // scale factor: <= 1.0. If it is 1.0 we do not resize (no upscaling).
+        let scale = (target_px as f64) / (orig_w as f64);
+        let resized: DynamicImage = if scale >= 1.0 {
             img
         } else {
+            let new_w = ((orig_w as f64) * scale).max(1.0).round() as u32;
+            let new_h = ((orig_h as f64) * scale).max(1.0).round() as u32;
             img.resize(new_w, new_h, FilterType::Lanczos3)
         };
 
-        // Aplanar canal alfa sobre fondo blanco y convertir a RGB
+        // Flatten alpha channel over white background and convert to RGB
         let rgba = resized.to_rgba8();
         let (w, h) = rgba.dimensions();
         let mut background = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
