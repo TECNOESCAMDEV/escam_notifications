@@ -16,6 +16,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use gloo_file::{futures::read_as_bytes, Blob};
 use gloo_net::http::Request;
+use js_sys::Date;
 use js_sys::Reflect;
 use regex::Regex;
 use std::collections::HashSet;
@@ -406,15 +407,41 @@ pub fn update(
         }
         Msg::OpenPdf => {
             if let Some(template) = &component.template {
-                if !template.id.is_empty() {
-                    component.pdf_url = Some(format!("/api/templates/pdf/{}", template.id));
-                    open_top_sheet(component.pdf_viewer_dialog_ref.clone());
-                } else {
+                if template.id.is_empty() {
                     show_toast("Guarda la plantilla antes de generar el PDF.");
+                    return true;
                 }
+
+                // Only proceed if the text hasn't changed since last save
+                let current_md5 = compute_md5(&component.text);
+                if let Some(orig) = &component.original_md5 {
+                    if orig != &current_md5 {
+                        show_toast("Guarda la plantilla antes de generar el PDF.");
+                        return true;
+                    }
+                } else {
+                    // If no original md5, must save first
+                    show_toast("Guarda la plantilla antes de generar el PDF.");
+                    return true;
+                }
+
+                // Force a cache-busting timestamp
+                let ts = Date::now() as u64;
+                component.pdf_url = Some(format!("/api/templates/pdf/{}?t={}", template.id, ts));
+
+                // Mostrar modal de progreso hasta que el iframe cargue
+                component.pdf_loading = true;
+
+                open_top_sheet(component.pdf_viewer_dialog_ref.clone());
             } else {
                 show_toast("No hay plantilla cargada.");
             }
+            true
+        }
+
+        Msg::PdfLoaded => {
+            // El iframe ha terminado de cargar
+            component.pdf_loading = false;
             true
         }
     }

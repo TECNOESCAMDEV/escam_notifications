@@ -38,4 +38,5 @@ pub enum Msg {
     InsertCsvColumnPlaceholder(ColumnCheck),
     CsvColumnsUpdated(Vec<ColumnCheck>),
     OpenPdf,
+    PdfLoaded,
 }

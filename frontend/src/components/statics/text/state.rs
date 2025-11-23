@@ -30,6 +30,7 @@ pub struct StaticTextComponent {
     pub template: Option<Template>,
     pub selected_image_id: Option<String>,
     pub pdf_url: Option<String>,
+    pub pdf_loading: bool,
     pub loaded: bool,
     pub original_md5: Option<String>,
 }
@@ -50,6 +51,7 @@ impl StaticTextComponent {
             template: None,
             selected_image_id: None,
             pdf_url: None,
+            pdf_loading: false,
             loaded: false,
             original_md5: None,
         }
