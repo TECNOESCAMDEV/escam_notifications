@@ -251,19 +251,34 @@ fn handle_image_line(
     if let Some(bytes) = images_map.get(inner) {
         let margin_in = MARGIN_MM / 25.4_f64;
         let content_width_in = PAGE_WIDTH_INCH - 2.0 * margin_in;
-        let target_px_f = content_width_in * IMAGE_DPI;
-        let target_px: u32 = target_px_f.max(1.0) as u32;
+        let content_target_px = content_width_in * IMAGE_DPI;
+
+        // Simulate front-end CSS limits: max-width:200px; max-height:200px;
+        let css_max_width_px: f64 = 200.0;
+        let css_max_height_px: f64 = 200.0;
+        // Convert CSS px -> image pixels at IMAGE_DPI assuming 96 CSS px per inch
+        let css_to_px = IMAGE_DPI / 96.0;
+        let css_max_width_target_px = css_max_width_px * css_to_px;
+        let css_max_height_target_px = css_max_height_px * css_to_px;
 
         let img = load_from_memory(bytes)?;
         let (orig_w, orig_h) = img.dimensions();
+        let orig_w_f = orig_w as f64;
+        let orig_h_f = orig_h as f64;
 
-        // scale factor: <= 1.0. If it is 1.0 we do not resize (no upscaling).
-        let scale = (target_px as f64) / (orig_w as f64);
+        // Compute scales (<= 1.0) for each constraint
+        let scale_by_content = (content_target_px / orig_w_f).min(1.0);
+        let scale_by_css_w = (css_max_width_target_px / orig_w_f).min(1.0);
+        let scale_by_css_h = (css_max_height_target_px / orig_h_f).min(1.0);
+
+        // Final scale is the most restrictive (smallest) of the three
+        let scale = scale_by_content.min(scale_by_css_w).min(scale_by_css_h);
+
         let resized: DynamicImage = if scale >= 1.0 {
             img
         } else {
-            let new_w = ((orig_w as f64) * scale).max(1.0).round() as u32;
-            let new_h = ((orig_h as f64) * scale).max(1.0).round() as u32;
+            let new_w = (orig_w_f * scale).max(1.0).round() as u32;
+            let new_h = (orig_h_f * scale).max(1.0).round() as u32;
             img.resize(new_w, new_h, FilterType::Lanczos3)
         };
 
