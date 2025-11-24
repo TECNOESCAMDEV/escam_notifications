@@ -26,10 +26,8 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlTextAreaElement, InputEvent};
 use yew::prelude::*;
 
-/// Top-level view function orchestrating the smaller helpers.
-///
-/// Calls `compute_preview_html` and composes the toolbar, tab bar and the
-/// currently active pane (editor or preview).
+/// Main view function for the static text editor component.
+/// Renders the toolbar, tab bar, and the active pane (editor or preview).
 pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>) -> Html {
     let link = ctx.link();
     let preview_html = compute_preview_html(component);
@@ -50,8 +48,7 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
     }
 }
 
-/// Build the left toolbar with formatting buttons, image and CSV helper.
-///
+/// Builds the left toolbar with formatting buttons, image and CSV helper.
 /// Uses `icon_button`, `CsvDataSourceComponent` and forwards events via `link`.
 fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
     html! {
@@ -77,8 +74,7 @@ fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
     }
 }
 
-/// Create a style application callback for the toolbar.
-///
+/// Creates a style application callback for the toolbar.
 /// `link` is the component `Scope` and `style` is the style name to apply.
 fn make_style_callback(
     link: &Scope<StaticTextComponent>,
@@ -88,11 +84,9 @@ fn make_style_callback(
     link.callback(move |_| Msg::ApplyStyle(s.clone(), ()))
 }
 
-/// Build the tab bar switching between Editor and Preview.
-///
-/// Uses `component.active_tab` and `link` to dispatch `Msg::SetTab`.
+/// Builds the tab bar for switching between Editor and Preview.
+/// Shows a red dot if there are unsaved changes.
 fn build_tab_bar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
-    // Determine if there are unsaved changes by comparing current MD5 with original
     let dirty = component
         .original_md5
         .as_ref()
@@ -106,23 +100,22 @@ fn build_tab_bar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
                 style="position: relative;"
             >
                 {"Editor"}
-                // Show red dot if there are unsaved changes
                 {
                     if dirty {
                         html! {
                             <span
                                 title="Cambios sin guardar"
                                 style="
-                                    position: absolute;
-                                    top: 4px;
-                                    right: 6px;
-                                    width: 8px;
-                                    height: 8px;
-                                    background: #e53935;
-                                    border-radius: 50%;
-                                    display: inline-block;
-                                    vertical-align: middle;
-                                "
+                                        position: absolute;
+                                        top: 4px;
+                                        right: 6px;
+                                        width: 8px;
+                                        height: 8px;
+                                        background: #e53935;
+                                        border-radius: 50%;
+                                        display: inline-block;
+                                        vertical-align: middle;
+                                    "
                             />
                         }
                     } else {
@@ -140,9 +133,8 @@ fn build_tab_bar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
     }
 }
 
-/// Build the editor tab UI: line numbers, textarea with protections and image dialog.
-///
-/// Preserves the original textarea callbacks and behaviour but scoped inside this helper.
+/// Builds the editor tab UI: line numbers, textarea, and image dialog.
+/// Handles textarea events and protections for placeholders and image tags.
 fn build_editor_tab(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
     let line_count = component.text.lines().count().max(1);
     let line_numbers = (1..=line_count)
@@ -223,8 +215,7 @@ fn build_editor_tab(component: &StaticTextComponent, link: &Scope<StaticTextComp
     }
 }
 
-/// Build the preview tab HTML wrapper.
-///
+/// Builds the preview tab HTML wrapper.
 /// Receives precomputed `preview_html` and returns the preview container.
 fn build_preview_tab(preview_html: AttrValue) -> Html {
     html! {
@@ -232,7 +223,7 @@ fn build_preview_tab(preview_html: AttrValue) -> Html {
     }
 }
 
-/// Small helper to render a toolbar button with a Material icon and a label.
+/// Renders a toolbar button with a Material icon and a label.
 fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wide: bool) -> Html {
     let class = if wide { "icon-btn wide" } else { "icon-btn" };
     html! {
@@ -243,18 +234,13 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
     }
 }
 
-/// Return `(start, end)` byte indexes of a `[ph:...:BASE64]` placeholder that
-/// contains `cursor_pos`, or `None` if cursor is outside.
-///
+/// Returns `(start, end)` byte indexes of a `[ph:...:BASE64]` placeholder containing `cursor_pos`, or `None` if cursor is outside.
 /// The end index is exclusive.
 fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usize)> {
     let pos = cursor_pos.min(text.len());
-    // Search backwards for the last "[ph:" before or at cursor
     if let Some(start) = text[..pos].rfind("[ph:") {
-        // Find the next closing bracket after start
         if let Some(rel_end) = text[start..].find(']') {
-            let end = start + rel_end + 1; // end is exclusive
-            // Ensure cursor is actually inside the found span (end is exclusive)
+            let end = start + rel_end + 1;
             if pos >= start && pos < end {
                 return Some((start, end));
             }
@@ -264,25 +250,12 @@ fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usiz
 }
 
 use crate::components::statics::text::dialogs::pdf::pdf_dialog;
-/// Produces the HTML used by the preview tab.
-///
-/// Pipeline:
-/// 1. Normalize line endings and trim invisible characters at the start.
-/// 2. Apply a single-newline preservation trick to encourage `pulldown_cmark` to keep single line breaks.
-/// 3. Replace `ph` placeholders with temporary tokens and store safe HTML snippets.
-/// 4. Compress multiple-newline runs into markers so they survive markdown parsing.
-/// 5. Parse with `pulldown_cmark`.
-/// 6. Expand newline markers into repeated `<br>` tags.
-/// 7. Reinstate safe placeholder HTML snippets.
-/// 8. Resolve inline template images (`[img:<id>]`) into `data:` URLs.
 use uuid::Uuid;
 use yew::html::Scope;
 use yew::virtual_dom::AttrValue;
 
-/// Normalize line endings and trim invisible characters at the start.
-///
-/// - Converts CRLF and CR to LF.
-/// - Removes BOM / zero-width spaces at the beginning.
+/// Normalizes line endings and trims invisible characters at the start.
+/// Converts CRLF and CR to LF. Removes BOM / zero-width spaces at the beginning.
 fn normalize_text(input: &str) -> String {
     input
         .replace("\r\n", "\n")
@@ -291,17 +264,15 @@ fn normalize_text(input: &str) -> String {
         .to_string()
 }
 
-/// Apply the "preserve single-newline spacing" trick used before parsing.
-///
+/// Preserves single-newline spacing before markdown parsing.
 /// Replaces each `\n` with ` \n` to encourage pulldown_cmark to keep single newlines.
 fn preserve_single_newline_trick(input: &str) -> String {
     input.replace("\n", " \n")
 }
 
-/// Find `[ph:TITLE:BASE64]` placeholders and replace them with temporary unique tokens.
-///
+/// Finds `[ph:TITLE:BASE64]` placeholders and replaces them with unique tokens.
 /// Returns the transformed text and a vector of `(token, html_snippet)` replacements.
-/// The HTML snippets are already escaped and considered safe for reinsertion.
+/// The HTML snippets are escaped and safe for reinsertion.
 fn replace_ph_placeholders(input: &str) -> (String, Vec<(String, String)>) {
     let ph_re = Regex::new(r"\[ph:([^:\]]+):([A-Za-z0-9+/=]+)]").unwrap();
     let mut replacements: Vec<(String, String)> = Vec::new();
@@ -337,19 +308,7 @@ fn replace_ph_placeholders(input: &str) -> (String, Vec<(String, String)>) {
     (text_with_tokens, replacements)
 }
 
-/// Compress sequences of 2+ newlines into markers of the form `\nBR_MARKER{N}\n`.
-///
-/// The count N equals the number of newlines compressed so it can later expand to N `<br>` tags.
-fn compress_multiple_newlines(input: &str) -> String {
-    let re = Regex::new(r"(\n\s*){2,}").unwrap();
-    re.replace_all(input, |caps: &regex::Captures| {
-        let count = caps[0].matches('\n').count();
-        format!("\nBR_MARKER{}\n", count)
-    })
-        .into_owned()
-}
-
-/// Parse markdown text into HTML using pulldown_cmark.
+/// Parses markdown text into HTML using pulldown_cmark.
 fn parse_markdown_to_html(input: &str) -> String {
     let parser = Parser::new(input);
     let mut html_output = String::new();
@@ -357,7 +316,7 @@ fn parse_markdown_to_html(input: &str) -> String {
     html_output
 }
 
-/// Expand `BR_MARKER{N}` placeholders into repeated `<br>` tags.
+/// Expands `BR_MARKER{N}` placeholders into repeated `<br>` tags.
 fn expand_br_markers(input: &str) -> String {
     let re_br = Regex::new(r"BR_MARKER(\d+)").unwrap();
     re_br
@@ -368,7 +327,7 @@ fn expand_br_markers(input: &str) -> String {
         .into_owned()
 }
 
-/// Replace previously generated PH... tokens with their safe HTML snippets.
+/// Replaces previously generated PH... tokens with their safe HTML snippets.
 fn replace_tokens_with_html(mut html: String, replacements: &[(String, String)]) -> String {
     for (token, snippet) in replacements {
         html = html.replace(token, snippet);
@@ -376,8 +335,7 @@ fn replace_tokens_with_html(mut html: String, replacements: &[(String, String)])
     html
 }
 
-/// Resolve inline template images of the form `[img:<id>]` into data URLs.
-///
+/// Resolves inline template images of the form `[img:<id>]` into data URLs.
 /// Uses `component.template.images` to find matches and substitute with `<img ... />` elements.
 fn resolve_inline_images(mut html: String, component: &StaticTextComponent) -> String {
     if let Some(template) = &component.template {
@@ -395,33 +353,64 @@ fn resolve_inline_images(mut html: String, component: &StaticTextComponent) -> S
     html
 }
 
-/// Top-level orchestrator: reconstructs the original `compute_preview_html` behavior by
-/// composing the smaller helpers.
-///
-/// Returns an `AttrValue` suitable to pass to Yew.
+/// Compresses multiple newlines outside the last bullet list block.
+/// Only compresses newlines outside the bullet block so that content after the last bullet is rendered outside the `<ul>`.
+fn compress_newlines_outside_bullets(input: &str) -> String {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut result = String::new();
+    let mut last_bullet_idx = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("- ") {
+            last_bullet_idx = Some(i);
+        }
+    }
+
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(last_idx) = last_bullet_idx {
+            if i <= last_idx {
+                result.push_str(lines[i]);
+                result.push('\n');
+                i += 1;
+                continue;
+            }
+        }
+        if lines[i].trim().is_empty() {
+            let mut count = 1;
+            while i + count < lines.len() && lines[i + count].trim().is_empty() {
+                count += 1;
+            }
+            if count > 1 {
+                result.push_str(&format!("\nBR_MARKER{}\n", count));
+                i += count;
+            } else {
+                result.push('\n');
+                i += 1;
+            }
+        } else {
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+        }
+    }
+    result
+}
+
+/// Main orchestrator for the preview HTML pipeline.
+/// Runs normalization, single-newline preservation, placeholder replacement, newline compression,
+/// markdown parsing, marker expansion, placeholder reinsertion, and image resolution.
+/// Returns an `AttrValue` for Yew.
 pub fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
-    // 1. Normalize and trim
     let text = normalize_text(&component.text);
-
-    // 2. Preserve single-newline trick
     let text = preserve_single_newline_trick(&text);
-
-    // 3. Replace placeholders with tokens
     let (text, replacements) = replace_ph_placeholders(&text);
 
-    // 4. Compress multiple newlines into markers
-    let marked_text = compress_multiple_newlines(&text);
+    let marked_text = compress_newlines_outside_bullets(&text);
 
-    // 5. Parse markdown to HTML
     let parsed_html = parse_markdown_to_html(&marked_text);
-
-    // 6. Expand BR markers into <br>
     let expanded_html = expand_br_markers(&parsed_html);
-
-    // 7. Replace placeholder tokens with safe HTML
     let replaced_html = replace_tokens_with_html(expanded_html, &replacements);
-
-    // 8. Resolve inline images
     let final_html = resolve_inline_images(replaced_html, component);
 
     AttrValue::from(final_html)
