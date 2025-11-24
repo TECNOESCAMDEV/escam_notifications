@@ -26,8 +26,8 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlTextAreaElement, InputEvent};
 use yew::prelude::*;
 
-/// Main view function for the static text editor component.
-/// Renders the toolbar, tab bar, and the active pane (editor or preview).
+/// Renders the main view for the static text editor component.
+/// Displays the toolbar, tab bar, and the active pane (editor or preview).
 pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>) -> Html {
     let link = ctx.link();
     let preview_html = compute_preview_html(component);
@@ -224,6 +224,10 @@ fn build_preview_tab(preview_html: AttrValue) -> Html {
 }
 
 /// Renders a toolbar button with a Material icon and a label.
+/// `icon_name`: Material icon name.
+/// `label`: Button label.
+/// `on_click`: Click event callback.
+/// `wide`: If true, uses wide button style.
 fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wide: bool) -> Html {
     let class = if wide { "icon-btn wide" } else { "icon-btn" };
     html! {
@@ -308,7 +312,8 @@ fn replace_ph_placeholders(input: &str) -> (String, Vec<(String, String)>) {
     (text_with_tokens, replacements)
 }
 
-/// Parses markdown text into HTML using pulldown_cmark.
+
+/// Parses Markdown text into HTML using pulldown_cmark.
 fn parse_markdown_to_html(input: &str) -> String {
     let parser = Parser::new(input);
     let mut html_output = String::new();
@@ -353,70 +358,27 @@ fn resolve_inline_images(mut html: String, component: &StaticTextComponent) -> S
     html
 }
 
-/// Compresses multiple newlines outside the last bullet list block.
-/// Only compresses newlines outside the bullet block so that content after the last bullet is rendered outside the `<ul>`.
-fn compress_newlines_outside_bullets(input: &str) -> String {
-    let lines: Vec<&str> = input.lines().collect();
-    let mut result = String::new();
-    let mut last_bullet_idx = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("- ") {
-            last_bullet_idx = Some(i);
-        }
-    }
-
-    let mut i = 0;
-    while i < lines.len() {
-        if let Some(last_idx) = last_bullet_idx {
-            if i <= last_idx {
-                result.push_str(lines[i]);
-                result.push('\n');
-                i += 1;
-                continue;
-            }
-        }
-        if lines[i].trim().is_empty() {
-            let mut count = 1;
-            while i + count < lines.len() && lines[i + count].trim().is_empty() {
-                count += 1;
-            }
-            if count > 1 {
-                result.push_str(&format!("\nBR_MARKER{}\n", count));
-                i += count;
-            } else {
-                result.push('\n');
-                i += 1;
-            }
-        } else {
-            result.push_str(lines[i]);
-            result.push('\n');
-            i += 1;
-        }
-    }
-    result
-}
-
-fn compress_newlines_after_styles(input: &str) -> String {
-    let style_re = Regex::new(r"(\*\*.*\*\*|_.*_|`.*`)$").unwrap();
+/// Compresses multiple consecutive empty lines after any line into a marker.
+/// This marker is later expanded into repeated `<br>` tags in the preview.
+/// Preserves multiple newlines after any line, including normal text and styled lines.
+fn compress_newlines_after_any_line(input: &str) -> String {
     let lines: Vec<&str> = input.lines().collect();
     let mut result = String::new();
     let mut i = 0;
     while i < lines.len() {
         result.push_str(lines[i]);
         result.push('\n');
-        if style_re.is_match(lines[i]) {
-            let mut count = 0;
-            let mut j = i + 1;
-            while j < lines.len() && lines[j].trim().is_empty() {
-                count += 1;
-                j += 1;
-            }
-            if count > 1 {
-                result.push_str(&format!("BR_MARKER{}\n", count));
-                i += count;
-                continue;
-            }
+        // Detect múltiples líneas vacías después de cualquier línea
+        let mut count = 0;
+        let mut j = i + 1;
+        while j < lines.len() && lines[j].trim().is_empty() {
+            count += 1;
+            j += 1;
+        }
+        if count > 1 {
+            result.push_str(&format!("BR_MARKER{}\n", count));
+            i += count;
+            continue;
         }
         i += 1;
     }
@@ -424,13 +386,12 @@ fn compress_newlines_after_styles(input: &str) -> String {
 }
 
 /// Main orchestrator for the preview HTML pipeline.
-/// Runs normalization, single-newline preservation, placeholder replacement, newline compression,
+/// Runs normalization, newline compression, single-newline preservation, placeholder replacement,
 /// markdown parsing, marker expansion, placeholder reinsertion, and image resolution.
 /// Returns an `AttrValue` for Yew.
 pub fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
     let text = normalize_text(&component.text);
-    let text = compress_newlines_outside_bullets(&text);
-    let text = compress_newlines_after_styles(&text);
+    let text = compress_newlines_after_any_line(&text);
     let text = preserve_single_newline_trick(&text);
     let (text, replacements) = replace_ph_placeholders(&text);
 
