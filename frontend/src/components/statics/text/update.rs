@@ -419,6 +419,11 @@ pub fn update(
             component.pdf_loading = false;
             true
         }
+        Msg::ClosePdfDialog => {
+            component.pdf_url = None;
+            component.pdf_loading = false;
+            true
+        }
     }
 }
 

@@ -39,4 +39,5 @@ pub enum Msg {
     CsvColumnsUpdated(Vec<ColumnCheck>),
     OpenPdf,
     PdfLoaded,
+    ClosePdfDialog,
 }

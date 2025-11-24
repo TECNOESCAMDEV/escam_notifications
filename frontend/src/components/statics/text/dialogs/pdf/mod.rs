@@ -1,4 +1,4 @@
-use crate::components::statics::text::Msg::PdfLoaded;
+use crate::components::statics::text::Msg::{ClosePdfDialog, PdfLoaded};
 use crate::components::statics::text::StaticTextComponent;
 use crate::tops_sheet::yw_material_top_sheet::{close_top_sheet, YwMaterialTopSheet};
 use yew::html::Scope;
@@ -8,8 +8,10 @@ pub fn pdf_dialog(component: &StaticTextComponent, link: &Scope<StaticTextCompon
     let dialog_ref = component.pdf_viewer_dialog_ref.clone();
     let on_close = {
         let dr = dialog_ref.clone();
+        let cb_link = link.clone();
         Callback::from(move |_| {
             close_top_sheet(dr.clone());
+            cb_link.send_message(ClosePdfDialog);
         })
     };
 
