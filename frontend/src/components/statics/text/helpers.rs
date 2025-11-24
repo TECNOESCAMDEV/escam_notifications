@@ -85,6 +85,19 @@ pub fn byte_to_utf16_idx(s: &str, byte_idx: usize) -> u32 {
     s[..byte_idx].encode_utf16().count() as u32
 }
 
+pub fn utf16_to_byte_idx(s: &str, utf16_idx: usize) -> usize {
+    let mut byte_idx = 0;
+    let mut count = 0;
+    for c in s.chars() {
+        if count >= utf16_idx {
+            break;
+        }
+        byte_idx += c.len_utf8();
+        count += c.len_utf16();
+    }
+    byte_idx
+}
+
 /// Shows a temporary toast at the bottom center of the page with a dark background.
 ///
 /// Characteristics
@@ -133,7 +146,6 @@ pub fn create_empty_template() -> common::model::template::Template {
         images: None,
     }
 }
-
 
 /// Helper to escape HTML special characters to avoid XSS when injecting decoded content.
 /// This is a simple replacer for the common characters.

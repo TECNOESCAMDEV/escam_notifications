@@ -297,65 +297,43 @@ pub fn update(
         }
         Msg::SetTemplate(template_opt) => {
             component.template = template_opt;
-            component.original_md5 = component
-                .template
-                .as_ref()
-                .map(|t| compute_md5(&t.text));
+            component.original_md5 = component.template.as_ref().map(|t| compute_md5(&t.text));
 
             // Update dirty flag
             set_window_dirty_flag(component);
             true
         }
+
         Msg::InsertCsvColumnPlaceholder(col_check) => {
-            // Build placeholder: [ph:{title}:{first_row_base_64}]
-            let title_safe = col_check.title.replace(':', "_");
-            let first_row_json = serde_json::to_string(&col_check.first_row).unwrap_or_default();
-            let first_row_b64 = general_purpose::STANDARD.encode(first_row_json.as_bytes());
-            let placeholder = format!("[ph:{}:{}]", title_safe, first_row_b64);
-
-            // Try to insert at current cursor position
             if let Some(textarea) = component.textarea_ref.cast::<HtmlTextAreaElement>() {
-                let current_value = textarea.value();
-                let start = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
-                let end = textarea
-                    .selection_end()
-                    .unwrap_or(Some(start as u32))
-                    .unwrap_or(start as u32) as usize;
+                let utf16_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
+                let byte_pos = super::helpers::utf16_to_byte_idx(&component.text, utf16_pos);
 
-                // Avoid out-of-bounds
-                let start = start.min(current_value.len());
-                let end = end.min(current_value.len());
+                let mut text = component.text.clone();
+                let value = col_check.first_row.clone().unwrap_or_default();
+                let base64 = general_purpose::STANDARD.encode(value);
+                let placeholder = format!("[ph:{}:{}]", col_check.title, base64);
+                text.insert_str(byte_pos, &placeholder);
+                component.text = text;
 
-                let mut new_text = String::with_capacity(current_value.len() + placeholder.len());
-                new_text.push_str(&current_value[..start]);
-                new_text.push_str(&placeholder);
-                new_text.push_str(&current_value[end..]);
+                let new_utf16_pos = byte_to_utf16_idx(
+                    &component.text,
+                    byte_pos + placeholder.len(),
+                );
 
-                // Update the state and textarea value
-                component.text = new_text.clone();
-                textarea.set_value(&new_text);
-
-                // Mover cursor al final del placeholder
-                let new_pos = (start + placeholder.len()) as u32;
-                textarea.set_selection_start(Some(new_pos)).ok();
-                textarea.set_selection_end(Some(new_pos)).ok();
-                textarea.focus().ok();
-
-                // Update dirty flag
-                set_window_dirty_flag(component);
+                let textarea_ref = component.textarea_ref.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    gloo_timers::future::TimeoutFuture::new(10).await;
+                    if let Some(textarea) = textarea_ref.cast::<HtmlTextAreaElement>() {
+                        textarea
+                            .set_selection_range(new_utf16_pos, new_utf16_pos)
+                            .ok();
+                    }
+                });
+                true
             } else {
-                // Fallback: at the end of the text if textarea not found
-                if !component.text.is_empty() {
-                    component.text.push(' ');
-                }
-                component.text.push_str(&placeholder);
-
-                // Update dirty flag
-                set_window_dirty_flag(component);
+                false
             }
-
-            // Force re-render to reflect changes
-            true
         }
         Msg::CsvColumnsUpdated(cols) => {
             // Build a set of allowed titles
@@ -383,10 +361,7 @@ pub fn update(
                     template.text = new_text.clone();
                 }
                 // Update the textarea DOM if present
-                if let Some(textarea) = component
-                    .textarea_ref
-                    .cast::<HtmlTextAreaElement>()
-                {
+                if let Some(textarea) = component.textarea_ref.cast::<HtmlTextAreaElement>() {
                     textarea.set_value(&new_text);
                 }
                 // Recalculate size and refresh images if applicable
