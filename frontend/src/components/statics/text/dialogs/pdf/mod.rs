@@ -33,27 +33,35 @@ pub fn pdf_dialog(component: &StaticTextComponent, link: &Scope<StaticTextCompon
 
                 {
                     if let Some(url) = &component.pdf_url {
+                        // Hide iframe while loading to prevent showing previous content,
+                        // and show a full white overlay as placeholder.
+                        let iframe_style = if component.pdf_loading {
+                            "width:100%;height:100%;border:none;background:#fff;border-radius:4px;visibility:hidden;"
+                        } else {
+                            "width:100%;height:100%;border:none;background:#fff;border-radius:4px;visibility:visible;"
+                        };
+
                         html! {
                             <div style="position:relative;width:80vw;height:80vh;">
-                                // iframe occupies the whole container
+                                // iframe occupies the whole container but stays hidden while generating
                                 <iframe
                                     src={url.clone()}
-                                    style="width:100%;height:100%;border:none;background:#fff;border-radius:4px;"
+                                    style={iframe_style}
                                     onload={on_iframe_load}
                                 />
+
                                 {
                                     if component.pdf_loading {
-                                        // Simple progress modal overlaying the iframe
+                                        // Full-size white overlay covering the iframe (prevents seeing previous PDF)
                                         html! {
-                                            <div style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;">
-                                                <div style="background:rgba(255,255,255,0.95);padding:24px;border-radius:8px;display:flex;flex-direction:column;align-items:center;">
+                                            <div style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#fff;z-index:10001;">
+                                                <div style="background:transparent;padding:24px;border-radius:8px;display:flex;flex-direction:column;align-items:center;">
                                                     <div class="spin" style="width:48px;height:48px;border:6px solid #ccc;border-top-color:#1976d2;border-radius:50%;animation:spin 1s linear infinite;"></div>
                                                     <div style="margin-top:12px;color:#000;">{"Generando PDF..."}</div>
                                                 </div>
-                                                // CSS for animation (minimal inline)
                                                 <style>{r#"
-                                                                                                        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-                                                                                                    "#}</style>
+                                                        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+                                                    "#}</style>
                                             </div>
                                         }
                                     } else {
