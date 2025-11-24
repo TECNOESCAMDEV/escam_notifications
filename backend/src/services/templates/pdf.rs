@@ -1,10 +1,16 @@
+//! This module handles the generation of PDF documents from templates.
+//!
+//! It includes an Actix web handler to serve the generated PDFs and the core logic
+//! for parsing template text, handling styled text (bold, italic), images, and
+//! placeholders, and rendering them into a PDF file using the `genpdf` crate.
+
 use actix_files::NamedFile;
 use actix_web::http::header::{ContentDisposition, DispositionParam, DispositionType};
 use actix_web::mime;
 use actix_web::{web, Error as ActixError, HttpRequest, Responder};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use genpdf::elements::{Break, Image as PdfImage, LinearLayout, Paragraph};
+use genpdf::elements::{Break, Image as PdfImage, Paragraph};
 use genpdf::style::{Style, StyledString};
 use genpdf::Document;
 use image::imageops::FilterType;
@@ -17,43 +23,62 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
-/// Constants and helpers preserved from previous implementation
+// --- Constants ---
+
+/// The width of the PDF page in inches.
 const PAGE_WIDTH_INCH: f64 = 8.5;
+/// The margin for the PDF page in millimeters.
 const MARGIN_MM: f64 = 10.0;
+/// The DPI (dots per inch) used for scaling images within the PDF.
 const IMAGE_DPI: f64 = 150.0;
 
+/// Represents the text style for a segment of text.
 enum TextStyle {
+    /// Standard, unstyled text.
     Regular,
+    /// Bold text.
     Bold,
+    /// Italic text.
     Italic,
+    /// Bold and italic text.
     BoldItalic,
 }
 
+/// Represents a segment of text with a specific style.
+/// Used to construct paragraphs with mixed styling.
 struct TextSegment {
     text: String,
     style: TextStyle,
 }
 
-/// Actix handler: generates and serves the PDF as `inline`.
+/// Actix web handler that generates a PDF from a template and serves it.
+///
+/// The PDF is served with `Content-Disposition: inline` to be displayed in the browser.
+///
+/// # Arguments
+/// * `template_id` - The ID of the template to use, extracted from the URL path.
+/// * `req` - The incoming `HttpRequest`.
+///
+/// # Returns
+/// A `Result` containing an `impl Responder` on success (the PDF file response)
+/// or an `ActixError` on failure.
 pub async fn process(
     template_id: web::Path<String>,
     req: HttpRequest,
 ) -> Result<impl Responder, ActixError> {
     let id = template_id.into_inner();
-    // Safe filename: use the id + .pdf
     let filename = format!("{}.pdf", id);
     let file_path = Path::new("./pdfs").join(&filename);
 
-    // Generate the PDF in `./pdfs/<id>.pdf`
+    // Generate the PDF file.
     if let Err(e) = generate_pdf_from_template_to_path(&id, &file_path) {
-        // Map to HTTP error
         return Err(actix_web::error::ErrorServiceUnavailable(format!(
             "PDF generation failed: {}",
             e
         )));
     }
 
-    // Serve the generated PDF
+    // Serve the generated PDF.
     if file_path.exists() {
         let named_file = NamedFile::open_async(&file_path)
             .await?
@@ -68,8 +93,17 @@ pub async fn process(
     }
 }
 
-
-/// Generates the PDF and writes it to `output_path`.
+/// Generates a PDF from a template and saves it to the specified output path.
+///
+/// This function connects to the database, fetches the template text and associated images,
+/// parses the template line by line, and renders the final PDF document.
+///
+/// # Arguments
+/// * `template_id` - The ID of the template to retrieve from the database.
+/// * `output_path` - The file system path where the generated PDF will be saved.
+///
+/// # Returns
+/// A `Result` which is empty on success, or contains a `Box<dyn Error>` on failure.
 pub fn generate_pdf_from_template_to_path(
     template_id: &str,
     output_path: &Path,
@@ -85,7 +119,7 @@ pub fn generate_pdf_from_template_to_path(
     let mut temp_files: Vec<NamedTempFile> = Vec::new();
 
     for raw_line in template_text.lines() {
-        let line = raw_line;
+        let line = raw_line.trim();
         if line.is_empty() {
             doc.push(Break::new(1));
             continue;
@@ -119,6 +153,13 @@ pub fn generate_pdf_from_template_to_path(
     Ok(())
 }
 
+/// Pushes a slice of `TextSegment`s into a `genpdf::Paragraph`.
+///
+/// Each segment is converted to a `StyledString` according to its style.
+///
+/// # Arguments
+/// * `p` - The `Paragraph` to which the styled text will be added.
+/// * `segments` - A slice of `TextSegment`s to add.
 fn push_segments_into_paragraph(p: &mut Paragraph, segments: &[TextSegment]) {
     for seg in segments {
         let styled = match seg.style {
@@ -133,6 +174,13 @@ fn push_segments_into_paragraph(p: &mut Paragraph, segments: &[TextSegment]) {
     }
 }
 
+/// Parses a line of text for Markdown-like styling (`*`, `**`, `***`) and returns a vector of `TextSegment`s.
+///
+/// # Arguments
+/// * `line` - The string slice to parse.
+///
+/// # Returns
+/// A `Vec<TextSegment>` representing the parsed line with styles.
 fn parse_styles(line: &str) -> Vec<TextSegment> {
     let mut segments = Vec::new();
     let chars: Vec<char> = line.chars().collect();
@@ -140,78 +188,42 @@ fn parse_styles(line: &str) -> Vec<TextSegment> {
 
     while i < chars.len() {
         // BoldItalic `***...***`
-        if i + 2 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' && chars[i + 2] == '*' {
-            let mut j = i + 3;
-            while j + 2 < chars.len() {
-                if chars[j] == '*' && chars[j + 1] == '*' && chars[j + 2] == '*' {
-                    let text: String = chars[i + 3..j].iter().collect();
-                    segments.push(TextSegment {
-                        text,
-                        style: TextStyle::BoldItalic,
-                    });
-                    i = j + 3;
-                    break;
-                }
-                j += 1;
-            }
-            if i <= chars.len() && segments.last().map(|s| s.text.len()).unwrap_or(0) == 0 {
+        if i + 5 < chars.len() && chars[i..i + 3] == ['*', '*', '*'] {
+            if let Some(end_pos) = line[i + 3..].find("***") {
+                let text = line[i + 3..i + 3 + end_pos].to_string();
                 segments.push(TextSegment {
-                    text: "***".to_string(),
-                    style: TextStyle::Regular,
+                    text,
+                    style: TextStyle::BoldItalic,
                 });
-                i += 3;
+                i += 3 + end_pos + 3;
+                continue;
             }
-            continue;
         }
 
         // Bold `**...**`
-        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
-            let mut j = i + 2;
-            while j + 1 < chars.len() {
-                if chars[j] == '*' && chars[j + 1] == '*' {
-                    let text: String = chars[i + 2..j].iter().collect();
-                    segments.push(TextSegment {
-                        text,
-                        style: TextStyle::Bold,
-                    });
-                    i = j + 2;
-                    break;
-                }
-                j += 1;
-            }
-            if i <= chars.len() && segments.last().map(|s| s.text.len()).unwrap_or(0) == 0 {
+        if i + 3 < chars.len() && chars[i..i + 2] == ['*', '*'] {
+            if let Some(end_pos) = line[i + 2..].find("**") {
+                let text = line[i + 2..i + 2 + end_pos].to_string();
                 segments.push(TextSegment {
-                    text: "**".to_string(),
-                    style: TextStyle::Regular,
+                    text,
+                    style: TextStyle::Bold,
                 });
-                i += 2;
+                i += 2 + end_pos + 2;
+                continue;
             }
-            continue;
         }
 
         // Italic `*...*`
-        if chars[i] == '*' {
-            let mut j = i + 1;
-            while j < chars.len() {
-                if chars[j] == '*' {
-                    let text: String = chars[i + 1..j].iter().collect();
-                    segments.push(TextSegment {
-                        text,
-                        style: TextStyle::Italic,
-                    });
-                    i = j + 1;
-                    break;
-                }
-                j += 1;
-            }
-            if i <= chars.len() && segments.last().map(|s| s.text.len()).unwrap_or(0) == 0 {
+        if i + 1 < chars.len() && chars[i] == '*' {
+            if let Some(end_pos) = line[i + 1..].find('*') {
+                let text = line[i + 1..i + 1 + end_pos].to_string();
                 segments.push(TextSegment {
-                    text: "*".to_string(),
-                    style: TextStyle::Regular,
+                    text,
+                    style: TextStyle::Italic,
                 });
-                i += 1;
+                i += 1 + end_pos + 1;
+                continue;
             }
-            continue;
         }
 
         // Plain text until next '*'
@@ -220,16 +232,28 @@ fn parse_styles(line: &str) -> Vec<TextSegment> {
             j += 1;
         }
         let text: String = chars[i..j].iter().collect();
-        segments.push(TextSegment {
-            text,
-            style: TextStyle::Regular,
-        });
+        if !text.is_empty() {
+            segments.push(TextSegment {
+                text,
+                style: TextStyle::Regular,
+            });
+        }
         i = j;
     }
 
     segments
 }
 
+/// Decodes a Base64 string from a placeholder tag.
+///
+/// The placeholder format is expected to be `[ph:BASE64_STRING]`.
+/// This function extracts and decodes the `BASE64_STRING`.
+///
+/// # Arguments
+/// * `ph` - The inner content of the placeholder tag (e.g., `ph:BASE64_STRING`).
+///
+/// # Returns
+/// An `Option<String>` containing the decoded text, or `None` if decoding fails.
 fn decode_placeholder(ph: &str) -> Option<String> {
     let parts: Vec<&str> = ph.split(':').collect();
     parts.last().and_then(|last| {
@@ -240,6 +264,12 @@ fn decode_placeholder(ph: &str) -> Option<String> {
     })
 }
 
+/// Loads the font family for the PDF document.
+///
+/// Tries to load "Arial", falling back to "LiberationSans".
+///
+/// # Returns
+/// A `Result` containing the `FontFamily` or a `Box<dyn Error>` on failure.
 fn load_font() -> Result<genpdf::fonts::FontFamily<genpdf::fonts::FontData>, Box<dyn Error>> {
     if let Ok(family) = genpdf::fonts::from_files("./fonts", "Arial", None) {
         return Ok(family);
@@ -247,6 +277,11 @@ fn load_font() -> Result<genpdf::fonts::FontFamily<genpdf::fonts::FontData>, Box
     genpdf::fonts::from_files("./fonts", "LiberationSans", None).map_err(Into::into)
 }
 
+/// Parses text containing `<b>` and `<i>` tags and adds it to the document, preserving line breaks.
+///
+/// # Arguments
+/// * `doc` - The `Document` to which the text will be added.
+/// * `text` - The text to parse and add.
 fn push_styled_text_with_breaks_to_doc(doc: &mut Document, text: &str) {
     let lines: Vec<&str> = text.split('\n').collect();
     for (i, line) in lines.iter().enumerate() {
@@ -257,6 +292,17 @@ fn push_styled_text_with_breaks_to_doc(doc: &mut Document, text: &str) {
     }
 }
 
+/// Loads all images associated with a template from the database.
+///
+/// Images are stored as Base64 strings and are decoded into byte vectors.
+///
+/// # Arguments
+/// * `conn` - A reference to the `rusqlite::Connection`.
+/// * `template_id` - The ID of the template whose images should be loaded.
+///
+/// # Returns
+/// A `Result` containing a `HashMap` mapping image IDs to their raw byte data,
+/// or a `Box<dyn Error>` on failure.
 fn load_images(
     conn: &Connection,
     template_id: &str,
@@ -274,32 +320,57 @@ fn load_images(
     Ok(images_map)
 }
 
+/// Creates and configures a new `genpdf::Document` with default settings.
+///
+/// Sets the font, title, font size, line spacing, and page margins.
+///
+/// # Returns
+/// A `Result` containing the configured `Document` or a `Box<dyn Error>` on failure.
 fn configure_document() -> Result<Document, Box<dyn Error>> {
     let font_family = load_font()?;
     let mut doc = Document::new(font_family);
     doc.set_title("Output from template");
 
-    let font_size_pt: u8 = (11.0_f32 * 0.75_f32).round() as u8;
+    let font_size_pt: u8 = 11;
     doc.set_font_size(font_size_pt);
 
-    doc.set_line_spacing(1.0f64);
+    doc.set_line_spacing(1.25);
 
     let mut decorator = genpdf::SimplePageDecorator::new();
-    decorator.set_margins(10);
+    decorator.set_margins(MARGIN_MM);
     doc.set_page_decorator(decorator);
     Ok(doc)
 }
 
+/// Handles a line representing a list item (e.g., "- Item text").
+///
+/// It adds a bullet point and the item text to the document.
+///
+/// # Arguments
+/// * `doc` - The `Document` to which the list item will be added.
+/// * `item_text` - The text of the list item (without the "- " prefix).
 fn handle_list_item(doc: &mut Document, item_text: &str) {
     let segments = parse_styles(item_text);
     let mut p = Paragraph::new("");
-    p.push(StyledString::new("• ", Style::new()));
+    p.push("• ");
     push_segments_into_paragraph(&mut p, &segments);
-    let mut layout = LinearLayout::vertical();
-    layout.push(p);
-    doc.push(layout);
+    doc.push(p);
 }
 
+/// Handles a line representing an image tag (e.g., `[img:image_id]`).
+///
+/// The function retrieves the image data, resizes it to fit the page width and
+/// CSS-like constraints, converts it to a compatible format (RGB PNG), saves it
+/// to a temporary file, and adds it to the PDF document.
+///
+/// # Arguments
+/// * `line` - The full line containing the image tag.
+/// * `images_map` - A map of image IDs to their byte data.
+/// * `temp_files` - A vector to hold `NamedTempFile`s, ensuring they are not deleted prematurely.
+/// * `doc` - The `Document` to which the image will be added.
+///
+/// # Returns
+/// An empty `Result` on success, or a `Box<dyn Error>` on failure.
 fn handle_image_line(
     line: &str,
     images_map: &HashMap<String, Vec<u8>>,
@@ -312,31 +383,33 @@ fn handle_image_line(
         let content_width_in = PAGE_WIDTH_INCH - 2.0 * margin_in;
         let content_target_px = content_width_in * IMAGE_DPI;
 
+        // These values simulate max-width/max-height from CSS.
         let css_max_width_px: f64 = 200.0;
         let css_max_height_px: f64 = 200.0;
-        let css_to_px = IMAGE_DPI / 96.0;
+        let css_to_px = IMAGE_DPI / 96.0; // Convert CSS pixels to PDF pixels
         let css_max_width_target_px = css_max_width_px * css_to_px;
         let css_max_height_target_px = css_max_height_px * css_to_px;
 
         let img = load_from_memory(bytes)?;
         let (orig_w, orig_h) = img.dimensions();
-        let orig_w_f = orig_w as f64;
-        let orig_h_f = orig_h as f64;
+        let (orig_w_f, orig_h_f) = (orig_w as f64, orig_h as f64);
 
+        // Determine the correct scaling factor by respecting all constraints.
         let scale_by_content = (content_target_px / orig_w_f).min(1.0);
         let scale_by_css_w = (css_max_width_target_px / orig_w_f).min(1.0);
         let scale_by_css_h = (css_max_height_target_px / orig_h_f).min(1.0);
-
         let scale = scale_by_content.min(scale_by_css_w).min(scale_by_css_h);
 
-        let resized: DynamicImage = if scale >= 1.0 {
-            img
-        } else {
+        let resized = if scale < 1.0 {
             let new_w = (orig_w_f * scale).max(1.0).round() as u32;
             let new_h = (orig_h_f * scale).max(1.0).round() as u32;
             img.resize(new_w, new_h, FilterType::Lanczos3)
+        } else {
+            img
         };
 
+        // Convert to RGB PNG, as genpdf has better support for it.
+        // This involves overlaying RGBA images on a white background.
         let rgba = resized.to_rgba8();
         let (w, h) = rgba.dimensions();
         let mut background = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
@@ -344,6 +417,7 @@ fn handle_image_line(
         let rgb_image = DynamicImage::ImageRgba8(background).to_rgb8();
         let raw = rgb_image.into_raw();
 
+        // Write the processed image to a temporary file.
         let mut tmp = NamedTempFile::new()?;
         {
             let file = tmp.as_file_mut();
@@ -354,17 +428,25 @@ fn handle_image_line(
             writer.write_image_data(&raw)?;
         }
 
+        // Add the image from the temp file to the document.
         let path: PathBuf = tmp.path().to_path_buf();
         let mut img_elem = PdfImage::from_path(path)?;
         img_elem.set_dpi(IMAGE_DPI);
-        temp_files.push(tmp);
         doc.push(img_elem);
+        temp_files.push(tmp); // Keep temp file alive.
     } else {
-        doc.push(Paragraph::new(format!("[imagen no encontrada: {}]", inner)));
+        doc.push(Paragraph::new(format!("[image not found: {}]", inner)));
     }
     Ok(())
 }
 
+/// Handles a line representing a placeholder tag (e.g., `[ph:BASE64_STRING]`).
+///
+/// Decodes the Base64 content and adds it to the document.
+///
+/// # Arguments
+/// * `line` - The full line containing the placeholder tag.
+/// * `doc` - The `Document` to which the decoded content will be added.
 fn handle_placeholder_line(line: &str, doc: &mut Document) {
     let inner = &line[4..line.len() - 1];
     if let Some(decoded) = decode_placeholder(inner) {
@@ -374,6 +456,13 @@ fn handle_placeholder_line(line: &str, doc: &mut Document) {
     }
 }
 
+/// Handles a normal line of text.
+///
+/// Parses the line for styles and adds it to the document as a paragraph.
+///
+/// # Arguments
+/// * `line` - The line of text to process.
+/// * `doc` - The `Document` to which the paragraph will be added.
 fn handle_normal_line(line: &str, doc: &mut Document) {
     let segments = parse_styles(line);
     let mut p = Paragraph::new("");
@@ -381,6 +470,14 @@ fn handle_normal_line(line: &str, doc: &mut Document) {
     doc.push(p);
 }
 
+/// Finds the first occurrence of a `<b>` or `<i>` tag in a string.
+///
+/// # Arguments
+/// * `text` - The string to search in.
+///
+/// # Returns
+/// An `Option` containing the tag name ("b" or "i") and its starting position,
+/// or `None` if no tags are found.
 fn find_next_tag(text: &str) -> Option<(&str, usize)> {
     let b_pos = text.find("<b>");
     let i_pos = text.find("<i>");
@@ -393,6 +490,15 @@ fn find_next_tag(text: &str) -> Option<(&str, usize)> {
     }
 }
 
+/// Parses a string with `<b>` and `<i>` tags into a `genpdf::Paragraph`.
+///
+/// This is used for content from placeholders which may contain simple HTML-like tags.
+///
+/// # Arguments
+/// * `text` - The string to parse.
+///
+/// # Returns
+/// A `Paragraph` with styled text.
 fn parse_styled_paragraph(text: &str) -> Paragraph {
     let mut paragraph = Paragraph::new("");
     let mut rest = text;
@@ -418,6 +524,7 @@ fn parse_styled_paragraph(text: &str) -> Paragraph {
             paragraph.push(styled);
             rest = &rest[start + tag_open.len() + rel_end + tag_close.len()..];
         } else {
+            // Unclosed tag, push the rest as plain text.
             paragraph.push(&rest[start..]);
             return paragraph;
         }
