@@ -397,18 +397,44 @@ fn compress_newlines_outside_bullets(input: &str) -> String {
     result
 }
 
+fn compress_newlines_after_styles(input: &str) -> String {
+    let style_re = Regex::new(r"(\*\*.*\*\*|_.*_|`.*`)$").unwrap();
+    let lines: Vec<&str> = input.lines().collect();
+    let mut result = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        result.push_str(lines[i]);
+        result.push('\n');
+        if style_re.is_match(lines[i]) {
+            let mut count = 0;
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                count += 1;
+                j += 1;
+            }
+            if count > 1 {
+                result.push_str(&format!("BR_MARKER{}\n", count));
+                i += count;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    result
+}
+
 /// Main orchestrator for the preview HTML pipeline.
 /// Runs normalization, single-newline preservation, placeholder replacement, newline compression,
 /// markdown parsing, marker expansion, placeholder reinsertion, and image resolution.
 /// Returns an `AttrValue` for Yew.
 pub fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
     let text = normalize_text(&component.text);
+    let text = compress_newlines_outside_bullets(&text);
+    let text = compress_newlines_after_styles(&text);
     let text = preserve_single_newline_trick(&text);
     let (text, replacements) = replace_ph_placeholders(&text);
 
-    let marked_text = compress_newlines_outside_bullets(&text);
-
-    let parsed_html = parse_markdown_to_html(&marked_text);
+    let parsed_html = parse_markdown_to_html(&text);
     let expanded_html = expand_br_markers(&parsed_html);
     let replaced_html = replace_tokens_with_html(expanded_html, &replacements);
     let final_html = resolve_inline_images(replaced_html, component);
