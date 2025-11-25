@@ -1,144 +1,139 @@
-//! Static text editor module: helpers for caret/index conversions, inline image tag detection,
-//! toast notifications, and utility constructors used by the component.
+//! Utility functions for the static text editor component.
 //!
-//! This module groups small, focused functions that support the editor UX:
-//! - Map between byte indices and UTF-16 indices as reported by browser textareas.
-//! - Detect an inline image tag like `[img:<id>]` at the current caret position.
-//! - Show short-lived toast messages (Spanish, the app's user language) in the browser.
-//! - Provide a ready-to-use empty `Template` instance for new documents.
+//! This module provides a collection of helper functions that support the main
+//! component logic found in `update.rs` and `view.rs`. Responsibilities include:
 //!
-//! Notes
-//! - The editor relies on browser selection indices, which are measured in UTF-16 code units.
-//!   Rust strings are UTF-8 in memory; the helpers below bridge that gap.
-//! - Inline images are represented in text as `[img:<id>]` and later resolved to real `<img>`
-//!   nodes during preview rendering.
+//! - **Index Conversion**: Translating between Rust's native UTF-8 byte indices
+//!   and the UTF-16 code unit indices used by browser textarea APIs (`selectionStart`,
+//!   `selectionEnd`). This is crucial for accurate text manipulation.
+//! - **Tag Detection**: Identifying special tags like `[img:<id>]` at the cursor's
+//!   position to trigger contextual UI, such as opening an image dialog.
+//! - **User Feedback**: Displaying temporary "toast" notifications to inform the
+//!   user about the status of operations like saving or loading.
+//! - **Model Instantiation**: Creating empty `Template` objects for new documents.
+//! - **Security & Hashing**: Escaping HTML to prevent XSS in previews and computing
+//!   MD5 hashes for dirty-checking unsaved changes.
 
 use regex::Regex;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 
-/// Returns the `[img:<id>]` tag identifier if the caret (UTF-16 units) is currently
-/// positioned inside such a tag in `text`.
+/// Finds the ID of an `[img:<id>]` tag if the cursor is inside it.
 ///
-/// Parameters
-/// - `text`: The full editor content.
-/// - `cursor_pos_utf16`: Caret position measured in UTF-16 code units (as returned by
-///   `HTMLTextAreaElement.selectionStart/selectionEnd`).
+/// This function is called from the `onselect` event handler in `view.rs`. When the
+/// user's selection moves inside an image tag, this function extracts the image ID.
+/// The view then dispatches a `Msg::OpenImageDialogWithId` message, which is handled
+/// in `update.rs` to open the image management dialog.
 ///
-/// Returns
-/// - `Some(String)` with the `id` captured from `[img:<id>]` when the caret lies within the tag
-///   bounds; otherwise `None`.
+/// # Arguments
+/// * `text` - The full string content of the textarea.
+/// * `cursor_pos_utf16` - The cursor position in UTF-16 code units, as provided by
+///   `textarea.selectionStart()`.
 ///
-/// Implementation detail
-/// - The caret position is converted to a UTF-8 byte index to match Rust's string slicing.
-/// - Detection uses the regex `\[img:([^]]+)]` and checks whether the caret byte index
-///   falls within a match's bounds.
-///
-/// Example
-/// ```ignore
-/// let text = "Hello [img:123] world";
-/// // If the caret is anywhere from the opening '[' to the closing ']',
-/// // this function returns Some("123".to_string()).
-/// ```
+/// # Returns
+/// `Some(String)` containing the image ID if the cursor is within an `[img:...]` tag,
+/// otherwise `None`.
 pub fn get_img_tag_id_at_cursor(text: &str, cursor_pos_utf16: usize) -> Option<String> {
-    // Safely convert UTF-16 position to UTF-8 byte index.
-    let mut utf16_count = 0usize;
-    let mut cursor_pos_byte = text.len();
-    for (byte_idx, ch) in text.char_indices() {
-        let ch_utf16_len = ch.len_utf16();
-        if utf16_count + ch_utf16_len > cursor_pos_utf16 {
-            cursor_pos_byte = byte_idx;
-            break;
-        }
-        utf16_count += ch_utf16_len;
-    }
-
-    let cursor_pos_byte = cursor_pos_byte.min(text.len());
+    // Convert UTF-16 cursor position to a UTF-8 byte index for Rust string slicing.
+    let cursor_pos_byte = utf16_to_byte_idx(text, cursor_pos_utf16);
 
     let re = Regex::new(r"\[img:([^]]+)]").unwrap();
     for mat in re.captures_iter(text) {
-        let m = mat.get(0).unwrap();
-        let start = m.start();
-        let end = m.end();
-
-        // Make `start` and `end` exclusive: the cursor immediately before '['
-        // or immediately after ']' is no longer considered "inside".
-        if cursor_pos_byte > start && cursor_pos_byte < end {
-            return mat.get(1).map(|id| id.as_str().to_string());
+        if let Some(m) = mat.get(0) {
+            let (start, end) = (m.start(), m.end());
+            // The cursor is "inside" if it's after the opening '[' and before the closing ']'.
+            if cursor_pos_byte > start && cursor_pos_byte < end {
+                return mat.get(1).map(|id| id.as_str().to_string());
+            }
         }
     }
     None
 }
 
-/// Converts a UTF-8 byte index within `s` to the corresponding UTF-16 code unit index.
+/// Converts a UTF-8 byte index to its corresponding UTF-16 code unit index.
 ///
-/// This is the inverse of the caret conversion used by browsers and is handy when
-/// you need to set `selectionStart/selectionEnd` after computing positions in bytes.
+/// This is the inverse of `utf16_to_byte_idx`. It's used when a text position is
+/// calculated in Rust (e.g., after inserting a placeholder) and needs to be
+/// converted back to a UTF-16 index to programmatically set the cursor position
+/// in the browser's textarea using `set_selection_range`.
 ///
-/// Parameters
-/// - `s`: The original string.
-/// - `byte_idx`: A valid byte boundary into `s`.
+/// # Arguments
+/// * `s` - The string slice being measured.
+/// * `byte_idx` - The UTF-8 byte index.
 ///
-/// Returns
-/// - The count of UTF-16 code units that represent `s[..byte_idx]`.
+/// # Returns
+/// The equivalent position in UTF-16 code units.
 pub fn byte_to_utf16_idx(s: &str, byte_idx: usize) -> u32 {
     s[..byte_idx].encode_utf16().count() as u32
 }
 
+/// Converts a UTF-16 code unit index to its corresponding UTF-8 byte index.
+///
+/// Browser textarea APIs (`selectionStart`, `selectionEnd`) work with UTF-16
+/// indices. Rust's string manipulation is based on UTF-8 bytes. This function
+/// is essential for converting a browser-reported cursor position into a valid
+/// byte index that can be used for slicing and manipulation within `update.rs`.
+///
+/// # Arguments
+/// * `s` - The full string context.
+/// * `utf16_idx` - The index in UTF-16 code units.
+///
+/// # Returns
+/// The equivalent position as a UTF-8 byte index.
 pub fn utf16_to_byte_idx(s: &str, utf16_idx: usize) -> usize {
-    let mut byte_idx = 0;
-    let mut count = 0;
-    for c in s.chars() {
-        if count >= utf16_idx {
-            break;
-        }
-        byte_idx += c.len_utf8();
-        count += c.len_utf16();
-    }
-    byte_idx
+    s.char_indices()
+        .map(|(byte_idx, _)| byte_idx)
+        .nth(s.encode_utf16().take(utf16_idx).count())
+        .unwrap_or(s.len())
 }
 
-/// Shows a temporary toast at the bottom center of the page with a dark background.
+/// Displays a temporary notification message at the bottom of the screen.
 ///
-/// Characteristics
-/// - Visual only; no ARIA roles are added.
-/// - Disappears automatically after ~3 seconds.
-/// - Message content is expected to be in Spanish (app audience), but this helper does not
-///   enforce any language constraints.
+/// This function creates and injects a styled `div` into the DOM to provide
+/// non-blocking feedback to the user. It is used throughout `update.rs` and
+/// `mod.rs` to confirm actions (e.g., "Plantilla guardada") or report errors
+/// (e.g., "Error al guardar"). The toast automatically removes itself after a
+/// few seconds.
+///
+/// # Arguments
+/// * `message` - The text content to display in the toast.
 pub fn show_toast(message: &str) {
     if let Some(window) = web_sys::window() {
         if let Some(document) = window.document() {
-            let toast = document.create_element("div").unwrap();
-            toast.set_inner_html(message);
-            let html_toast = toast.dyn_into::<HtmlElement>().unwrap();
-            let style = html_toast.style();
-            let _ = style.set_property("position", "fixed");
-            let _ = style.set_property("bottom", "20px");
-            let _ = style.set_property("left", "50%");
-            let _ = style.set_property("transform", "translateX(-50%)");
-            let _ = style.set_property("background", "rgba(0, 0, 0, 0.8)");
-            let _ = style.set_property("color", "#fff");
-            let _ = style.set_property("padding", "10px 20px");
-            let _ = style.set_property("border-radius", "4px");
-            let _ = style.set_property("z-index", "10000");
-            let _ = style.set_property("font-family", "Arial, sans-serif");
-            document.body().unwrap().append_child(&html_toast).unwrap();
+            if let (Ok(toast), Some(body)) = (document.create_element("div"), document.body()) {
+                toast.set_inner_html(message);
+                let html_toast: HtmlElement = toast.unchecked_into();
+                let style = html_toast.style();
+                style.set_property("position", "fixed").ok();
+                style.set_property("bottom", "20px").ok();
+                style.set_property("left", "50%").ok();
+                style.set_property("transform", "translateX(-50%)").ok();
+                style.set_property("background", "rgba(0, 0, 0, 0.8)").ok();
+                style.set_property("color", "#fff").ok();
+                style.set_property("padding", "10px 20px").ok();
+                style.set_property("border-radius", "4px").ok();
+                style.set_property("z-index", "10000").ok();
+                style.set_property("font-family", "Arial, sans-serif").ok();
 
-            let toast_clone = html_toast.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                gloo_timers::future::TimeoutFuture::new(3000).await;
-                if let Some(parent) = toast_clone.parent_node() {
-                    parent.remove_child(&toast_clone).ok();
+                if body.append_child(&html_toast).is_ok() {
+                    wasm_bindgen_futures::spawn_local(async move {
+                        gloo_timers::future::TimeoutFuture::new(3000).await;
+                        if let Some(parent) = html_toast.parent_node() {
+                            parent.remove_child(&html_toast).ok();
+                        }
+                    });
                 }
-            });
+            }
         }
     }
 }
 
-/// Creates a brand-new `Template` with a random id, empty text, and no images.
+/// Creates a new, empty `Template` instance with a unique ID.
 ///
-/// Used when the editor starts without a template id or when loading fails, so users can
-/// immediately begin typing and save later.
+/// This factory function is called from `mod.rs` during component initialization
+/// if no `template_id` prop is provided, or if loading an existing template fails.
+/// It ensures the editor always has a valid `Template` object to work with,
+/// preventing panics and allowing the user to start creating content immediately.
 pub fn create_empty_template() -> common::model::template::Template {
     common::model::template::Template {
         id: uuid::Uuid::new_v4().to_string(),
@@ -147,8 +142,20 @@ pub fn create_empty_template() -> common::model::template::Template {
     }
 }
 
-/// Helper to escape HTML special characters to avoid XSS when injecting decoded content.
-/// This is a simple replacer for the common characters.
+/// Escapes special HTML characters in a string.
+///
+/// This is a security and rendering utility used in the preview generation
+/// pipeline (`view.rs`). When placeholder tags like `[ph:...]` are processed,
+/// their decoded content is escaped using this function before being embedded
+/// in the final HTML. This prevents content from being misinterpreted as HTML
+/// tags, mitigating XSS risks.
+///
+/// # Arguments
+/// * `input` - The raw string to escape.
+///
+/// # Returns
+/// A new string with `&`, `<`, `>`, `"`, and `'` replaced by their respective
+/// HTML entities.
 pub fn escape_html(input: &str) -> String {
     input
         .replace('&', "&amp;")
@@ -158,7 +165,19 @@ pub fn escape_html(input: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// Compute an MD5 hex digest for `input`.
+/// Computes the MD5 hash of a string and returns it as a hex digest.
+///
+/// This function is central to the editor's "dirty checking" mechanism. In
+/// `update.rs`, the hash of the text is stored in `original_md5` upon load or
+/// save (`Msg::SetTemplate`, `Msg::SaveSucceeded`). In `view.rs`, the hash of the
+/// current text is compared against `original_md5` to determine if there are
+/// unsaved changes, showing or hiding a "dirty" indicator in the UI.
+///
+/// # Arguments
+/// * `input` - The string to hash.
+///
+/// # Returns
+/// A `String` containing the 32-character hexadecimal representation of the MD5 hash.
 pub fn compute_md5(input: &str) -> String {
     format!("{:x}", md5::compute(input))
 }

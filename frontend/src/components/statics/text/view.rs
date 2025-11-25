@@ -5,7 +5,7 @@
 //! It translates user interactions (clicks, key presses, text input) into `Msg`
 //! variants that are sent to the `update` function to modify the component's state.
 //!
-//! UI Structure:
+//! ## UI Structure
 //! - A top-level `view` function that orchestrates the layout.
 //! - A `build_toolbar` function that creates buttons for actions like undo/redo,
 //!   styling, saving, and opening dialogs. Each button dispatches a specific `Msg`.
@@ -14,12 +14,56 @@
 //!   events like input, selection changes, and key presses for protected text.
 //! - A `build_preview_tab` that renders the HTML generated from the markdown text.
 //!
-//! Message Dispatching:
-//! - **Formatting**: `Msg::ApplyStyle`, `Msg::Undo`, `Msg::Redo`.
-//! - **File/Dialogs**: `Msg::OpenFileDialog`, `Msg::OpenImageDialogWithId`, `Msg::OpenPdf`.
-//! - **State Sync**: `Msg::UpdateText`, `Msg::AutoResize` on input and scroll.
-//! - **Persistence**: `Msg::Save`.
-//! - **Data Integration**: `Msg::InsertCsvColumnPlaceholder`, `Msg::CsvColumnsUpdated` from a child component.
+//! ## Message Dispatching
+//! The view functions dispatch the following messages to the update loop:
+//!
+//! - **`Msg::SetTab(String)`**: Dispatched from `build_tab_bar` when the user clicks the "Editor"
+//!   or "Preview" button. It changes the `active_tab` state to switch between the editing
+//!   and previewing interfaces.
+//!
+//! - **`Msg::UpdateText(String)`**: Dispatched from the `oninput` event of the `<textarea>` in
+//!   `build_editor_tab`. It sends the entire current content of the textarea to the update
+//!   function, which then updates the `text` state, manages the undo/redo history, and
+//!   sets the application's dirty flag.
+//!
+//! - **`Msg::Undo` / `Msg::Redo`**: Dispatched from `build_toolbar` buttons or `onkeydown`
+//!   (Ctrl+Z/Y) in `build_editor_tab`. These messages navigate the `history` stack in the
+//!   component state, changing the current `text` to a previous or subsequent version.
+//!
+//! - **`Msg::ApplyStyle(String, ())`**: Dispatched from `build_toolbar` style buttons (e.g.,
+//!   "Bold", "Italic"). The update function inserts the corresponding markdown-like syntax
+//!   (e.g., `**text**`) at the current cursor position or around the selected text.
+//!
+//! - **`Msg::AutoResize`**: Dispatched from `oninput`, `onscroll`, and `onselect` events in
+//!   `build_editor_tab`. This message triggers a recalculation of the textarea's height to
+//!   fit its content, preventing internal scrollbars. It also synchronizes the `template`
+//!   model by updating its text and cleaning up unused image references.
+//!
+//! - **`Msg::OpenFileDialog`**: Dispatched from the "Image" button in `build_toolbar`. It
+//!   programmatically clicks a hidden `<input type="file">` element, allowing the user to
+//!   select an image for upload without exposing the raw file input UI.
+//!
+//! - **`Msg::OpenImageDialogWithId(String)`**: Dispatched from the `onselect` event in
+//!   `build_editor_tab` when the user's cursor enters an `[img:...]` tag. The update
+//!   function uses the provided ID to set `selected_image_id` and open a dialog
+//!   displaying that specific image for management.
+//!
+//! - **`Msg::Save`**: Dispatched from the "Save" button in `build_toolbar`. It triggers the
+//!   persistence logic in the update function, which sends the entire `template` object
+//!   (including text and Base64-encoded images) to the backend API.
+//!
+//! - **`Msg::InsertCsvColumnPlaceholder(ColumnCheck)`**: Dispatched from the child
+//!   `CsvDataSourceComponent` when the user selects a CSV column. The update function
+//!   inserts a `[ph:TITLE:BASE64]` placeholder tag at the current cursor position.
+//!
+//! - **`Msg::CsvColumnsUpdated(Vec<ColumnCheck>)`**: Dispatched from the child
+//!   `CsvDataSourceComponent` when its underlying CSV data changes. The update function
+//!   uses this to prune any `[ph:...]` placeholders from the text whose titles are no
+//!   longer present in the new set of columns.
+//!
+//! - **`Msg::OpenPdf`**: Dispatched from the "PDF" button in `build_toolbar`. It signals the
+//!   update function to check for unsaved changes, then construct a URL to the PDF
+//!   generation endpoint and open the PDF viewer dialog with a loading indicator.
 
 use super::helpers::{compute_md5, escape_html, get_img_tag_id_at_cursor};
 use super::messages::Msg;
@@ -67,15 +111,6 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
 /// Each button is configured with an icon and a callback that dispatches a
 /// specific `Msg` to the update loop. This function is the primary source for
 /// user-initiated commands that are not direct text input.
-///
-/// Dispatched Messages:
-/// - `Msg::Undo`/`Msg::Redo`: Navigate the text history.
-/// - `Msg::ApplyStyle`: Insert markdown styling snippets.
-/// - `Msg::OpenFileDialog`: Trigger the hidden file input for image uploads.
-/// - `Msg::OpenPdf`: Request the generation and display of a PDF preview.
-/// - `Msg::Save`: Persist the current template to the backend.
-/// - `Msg::InsertCsvColumnPlaceholder`: (From child) Insert a CSV data placeholder.
-/// - `Msg::CsvColumnsUpdated`: (From child) Notify that the CSV source has changed.
 fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
     html! {
         <div class="icon-toolbar">
