@@ -1,3 +1,48 @@
+//! This module orchestrates the asynchronous verification of CSV data sources.
+//!
+//! It provides the API endpoint to initiate a verification job and contains the core logic
+//! for validating the CSV file in a background task. This decouples the potentially
+//! long-running verification process from the HTTP request/response cycle, allowing the
+//! client to receive an immediate job ID and poll for status updates.
+//!
+//! ## Workflow
+//!
+//! 1.  **Initiation**: A client sends a `POST` request to `/api/data_sources/csv/verify`
+//!     (handled by `process`) with a template ID.
+//!
+//! 2.  **Job Scheduling**: The `schedule_verify_job` function is called. It generates a unique
+//!     `job_id`, sets the initial job status to `Pending` in the shared `JobsState`, and
+//!     returns the `job_id` to the client immediately.
+//!
+//! 3.  **Background Execution**: A non-blocking Tokio task is spawned. This task, in turn,
+//!     spawns a blocking thread using `tokio::task::spawn_blocking` to execute the CPU-intensive
+//!     `verify_csv_data_blocking` function. This prevents the verification work from stalling
+//!     the Tokio runtime.
+//!
+//! 4.  **Verification Logic**: `verify_csv_data_blocking` performs the validation:
+//!     - It fetches the template's metadata from the database, including the current
+//!       `datasource_md5` and `last_verified_md5`.
+//!     - It implements a "fast-path" optimization: if the current CSV is already marked as
+//!       verified (`verified == 1` and `datasource_md5 == last_verified_md5`), it simply
+//!       infers column types from the first data row and completes the job successfully
+//!       without a full scan.
+//!     - It reads the CSV file chunk by chunk, validating headers and data rows in parallel
+//!       using Rayon for efficiency.
+//!     - It sends `JobStatus::InProgress` updates via the `mpsc::Sender` in `JobsState`
+//!       as it processes chunks.
+//!
+//! 5.  **Outcome & State Update**:
+//!     - **On Success**: The `templates` table in the database is updated to set `verified = 1`.
+//!       A `JobStatus::Completed` message, containing the inferred column schema as a JSON
+//!       string, is sent to the job controller.
+//!     - **On Failure**: If any validation error occurs (e.g., bad header, invalid data),
+//!       the database is rolled back by restoring the `datasource_md5` from `last_verified_md5`
+//!       (if available). A `JobStatus::Failed` message with a descriptive error is sent.
+//!
+//! 6.  **Status Polling**: The client uses the `job_id` to poll the
+//!     `GET /api/data_sources/csv/status/{job_id}` endpoint (defined in `get_status.rs`),
+//!     which reads the job's current status from the shared `JobsState`.
+
 use crate::job_controller::state::{JobUpdate, JobsState};
 use actix_web::{web, HttpResponse, Responder};
 use common::jobs::JobStatus;
@@ -16,9 +61,14 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-/// Validate a single cell value against a `PlaceholderType`.
+/// Validates a single cell value against a `PlaceholderType`.
 ///
-/// Returns `true` if the `value` conforms to the provided `var_type` heuristic, `false` otherwise.
+/// # Arguments
+/// * `var_type` - The expected data type for the cell.
+/// * `value` - The string content of the cell to validate.
+///
+/// # Returns
+/// `true` if the `value` conforms to the `var_type` heuristic, `false` otherwise.
 fn validate_value(var_type: &PlaceholderType, value: &str) -> bool {
     match var_type {
         PlaceholderType::Text => true,
@@ -27,10 +77,19 @@ fn validate_value(var_type: &PlaceholderType, value: &str) -> bool {
     }
 }
 
-/// Search a chunk of lines for the first invalid row using parallel iteration.
+/// Searches a chunk of lines for the first invalid row using parallel iteration.
 ///
-/// Returns `Some((row_index, column_title))` if an invalid cell is found.
-/// `row_index` is the 1-based CSV row index including header (+2 offset used elsewhere).
+/// This function leverages Rayon's `par_iter` to efficiently scan multiple rows at once.
+///
+/// # Arguments
+/// * `chunk` - A slice of tuples, where each tuple contains a line's index and its string content.
+/// * `columns` - A slice of `ColumnCheck` structs defining the expected type for each column.
+/// * `title_to_index` - A map from column titles to their zero-based index.
+/// * `delimiter` - The character used to separate columns in the CSV.
+///
+/// # Returns
+/// `Some((row_index, column_title, reason))` if an invalid cell is found. The `row_index`
+/// is the 1-based CSV row number. Returns `None` if the entire chunk is valid.
 fn find_first_invalid(
     chunk: &[(usize, String)],
     columns: &[ColumnCheck],
@@ -45,28 +104,28 @@ fn find_first_invalid(
                     return Some((
                         idx + 2,
                         col.title.clone(),
-                        "columna ausente en la fila".to_string(),
+                        "column missing in row".to_string(),
                     ));
                 }
                 let cell = normalize_cell(record[col_idx]);
                 if !validate_value(&col.placeholder_type, &cell) {
                     let tipo = match col.placeholder_type {
-                        PlaceholderType::Text => "texto",
-                        PlaceholderType::Number => "número",
-                        PlaceholderType::Currency => "moneda",
+                        PlaceholderType::Text => "text",
+                        PlaceholderType::Number => "number",
+                        PlaceholderType::Currency => "currency",
                         PlaceholderType::Email => "email",
                     };
                     return Some((
                         idx + 2,
                         col.title.clone(),
-                        format!("valor '{}' no cumple el tipo esperado: {}", cell, tipo),
+                        format!("value '{}' does not match expected type: {}", cell, tipo),
                     ));
                 }
             } else {
                 return Some((
                     idx + 2,
                     col.title.clone(),
-                    "título de cabecera no encontrado".to_string(),
+                    "header title not found".to_string(),
                 ));
             }
         }
@@ -74,10 +133,19 @@ fn find_first_invalid(
     })
 }
 
-/// Trim and normalize a CSV cell.
+/// Trims and normalizes a CSV cell's content.
 ///
-/// Removes outer single or double quotes if present, replaces NBSP with a space,
-/// and trims surrounding whitespace. Returns the normalized string.
+/// This function performs the following operations:
+/// 1. Removes surrounding whitespace.
+/// 2. Strips outer single or double quotes.
+/// 3. Replaces non-breaking spaces (`\u{00A0}`) with regular spaces.
+/// 4. Trims whitespace again.
+///
+/// # Arguments
+/// * `cell` - The raw string content of the cell.
+///
+/// # Returns
+/// A normalized `String`.
 fn normalize_cell(cell: &str) -> String {
     let s = cell.trim();
     let s = s
@@ -89,15 +157,22 @@ fn normalize_cell(cell: &str) -> String {
     s.replace('\u{00A0}', " ").trim().to_string()
 }
 
-/// Validate header titles and normalize them.
+/// Validates the header line of the CSV and normalizes the titles.
 ///
-/// Behavior:
-/// - Splits `header_line` by `delimiter` and normalizes each title via `normalize_cell`.
-/// - Ensures no empty titles and that titles are not purely numeric.
-/// - Collapses any runs of whitespace into a single underscore (`_`) to produce normalized titles.
-/// - Ensures normalized titles are unique.
+/// This function ensures that:
+/// - The header is not empty.
+/// - No title is empty after normalization.
+/// - No title is purely numeric.
+/// - All normalized titles are unique.
 ///
-/// Returns a `Vec<String>` with normalized titles on success, or `Err(String)` with an error message.
+/// Normalization involves collapsing runs of whitespace into a single underscore (`_`).
+///
+/// # Arguments
+/// * `header_line` - The raw string of the CSV header row.
+/// * `delimiter` - The column delimiter character.
+///
+/// # Returns
+/// A `Result` containing a `Vec<String>` of normalized titles on success, or an error `String` on failure.
 fn validate_and_normalize_titles(
     header_line: &str,
     delimiter: char,
@@ -108,7 +183,7 @@ fn validate_and_normalize_titles(
         .collect();
 
     if raw_titles.is_empty() {
-        return Err("La línea de cabecera no contiene títulos".to_string());
+        return Err("Header line contains no titles".to_string());
     }
 
     let mut seen = HashSet::new();
@@ -117,13 +192,13 @@ fn validate_and_normalize_titles(
     for t in raw_titles {
         let t_trim = t.trim();
         if t_trim.is_empty() {
-            return Err("La cabecera contiene un título vacío".to_string());
+            return Err("Header contains an empty title".to_string());
         }
 
         // Reject purely numeric titles
         if t_trim.parse::<f64>().is_ok() {
             return Err(format!(
-                "Los títulos de la cabecera deben ser textuales, se encontró el título numérico: '{}'",
+                "Header titles must be textual, but found numeric title: '{}'",
                 t_trim
             ));
         }
@@ -133,7 +208,7 @@ fn validate_and_normalize_titles(
 
         if seen.contains(&norm) {
             return Err(format!(
-                "Título duplicado en la cabecera tras normalizar: '{}'",
+                "Duplicate title in header after normalization: '{}'",
                 norm
             ));
         }
@@ -144,16 +219,19 @@ fn validate_and_normalize_titles(
     Ok(normalized)
 }
 
-/// Infer placeholder types for each column using the sample `second_line`.
+/// Infers the `PlaceholderType` for each column based on the first data row.
 ///
-/// Heuristics:
-/// - Email if the value contains `@` and `.`
-/// - Currency if it contains common currency symbols
-/// - Number if parsable as `f64`
-/// - Otherwise `Text`
+/// It uses simple heuristics to guess the data type (Email, Currency, Number, or Text)
+/// and captures the value from the first data row for each column.
 ///
-/// Now also captures the `first_row` value (normalized) for each column.
-/// Returns a vector of `ColumnCheck` aligned with `titles`.
+/// # Arguments
+/// * `titles` - A slice of normalized header titles.
+/// * `second_line` - The string content of the first data row (the second line of the file).
+/// * `delimiter` - The column delimiter character.
+///
+/// # Returns
+/// A `Vec<ColumnCheck>` where each element corresponds to a column, containing its title,
+/// inferred type, and the value from the first data row.
 fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) -> Vec<ColumnCheck> {
     let cells: Vec<String> = second_line
         .split(delimiter)
@@ -190,13 +268,21 @@ fn infer_column_checks(titles: &[String], second_line: &str, delimiter: char) ->
     columns
 }
 
-/// Update the `templates` table after a verification attempt.
+/// Updates the template's verification status in the database after a verification attempt.
 ///
-/// Behavior:
-/// - If `success` is `true`: set `verified = 1` and `last_verified_md5 = datasource_md5`.
-/// - If `success` is `false`: set `verified = 1` and restore `datasource_md5 = last_verified_md5`.
+/// - On success, it sets `verified = 1` and updates `last_verified_md5` to the current `datasource_md5`.
+/// - On failure, it performs a rollback by setting `verified = 1` but restoring `datasource_md5`
+///   from the `last_verified_md5` field. This effectively reverts to the last known-good version.
 ///
-/// Returns `Ok(())` on success or `Err(String)` with the DB error message.
+/// # Arguments
+/// * `conn` - A reference to the database connection.
+/// * `id` - The ID of the template to update.
+/// * `datasource_md5` - The MD5 hash of the file that was just verified.
+/// * `last_verified_md5` - The MD5 hash of the previously verified file, used for rollback.
+/// * `success` - A boolean indicating whether the verification was successful.
+///
+/// # Returns
+/// `Ok(())` on success, or an error `String` if the database operation fails.
 fn update_template_verification(
     conn: &Connection,
     id: &str,
@@ -220,10 +306,21 @@ fn update_template_verification(
     Ok(())
 }
 
-/// Send a `JobUpdate::Failed` with the first invalid row details.
+/// Sends a `JobStatus::Failed` update via the MPSC channel.
 ///
-/// This helper formats an informative failure message and sends it over `tx`
-/// using the blocking send API. It also logs timing information.
+/// This is a helper to format a failure message and send it using a blocking send,
+/// suitable for use within a synchronous context like `spawn_blocking`.
+///
+/// # Arguments
+/// * `tx` - The MPSC sender for `JobUpdate` messages.
+/// * `job_id` - The ID of the failing job.
+/// * `row` - The row number where the error occurred.
+/// * `title` - The column title where the error occurred.
+/// * `reason` - A string describing the validation failure.
+/// * `start` - The `Instant` when the job started, used for logging total duration.
+///
+/// # Returns
+/// `Ok(())` on success. The underlying send can fail if the receiver is dropped.
 fn handle_first_invalid_sync(
     tx: &mpsc::Sender<JobUpdate>,
     job_id: &str,
@@ -235,7 +332,7 @@ fn handle_first_invalid_sync(
     let _ = tx.blocking_send(JobUpdate {
         job_id: job_id.to_string(),
         status: JobStatus::Failed(format!(
-            "Primera fila inválida en: fila {}, columna '{}': {}",
+            "First invalid row at: row {}, column '{}': {}",
             row, title, reason
         )),
     });
@@ -243,10 +340,19 @@ fn handle_first_invalid_sync(
     Ok(())
 }
 
-/// Process a single chunk synchronously.
+/// Processes a single chunk of CSV lines synchronously.
 ///
-/// Returns `Ok(true)` if an invalid row was found and handled (a `JobUpdate::Failed` has been sent),
-/// or `Ok(false)` if the chunk passed validation. Errors are returned as `Err(String)`.
+/// It calls `find_first_invalid` to check for validation errors within the chunk.
+///
+/// # Arguments
+/// * `chunk` - The slice of lines to process.
+/// * `columns` - The column schema to validate against.
+/// * `title_to_index` - A map from column titles to their index.
+/// * `delimiter` - The CSV delimiter character.
+///
+/// # Returns
+/// `Ok(Some(details))` if an invalid row is found, where `details` is a tuple containing
+/// the row, title, and reason. `Ok(None)` if the chunk is valid. `Err` on internal failure.
 fn process_chunk_sync(
     chunk: &[(usize, String)],
     columns: &[ColumnCheck],
@@ -261,10 +367,14 @@ fn process_chunk_sync(
     ))
 }
 
-/// Read the header line and the first data line from a CSV reader.
+/// Reads the header line and the first data line from a CSV file.
 ///
-/// Returns a tuple `(header_line, second_line)` with trailing newlines removed,
-/// or `Err(String)` if reading fails or no data rows are present.
+/// # Arguments
+/// * `reader` - A mutable reference to a `BufReader` for the CSV file.
+///
+/// # Returns
+/// A `Result` containing a tuple `(header_line, second_line)` on success, or an
+/// error `String` if the file is empty, contains no data rows, or a read error occurs.
 fn read_header_and_second_line(reader: &mut BufReader<File>) -> Result<(String, String), String> {
     let mut header_line = String::new();
     reader
@@ -278,16 +388,23 @@ fn read_header_and_second_line(reader: &mut BufReader<File>) -> Result<(String, 
         .map_err(|e| e.to_string())?
         == 0
     {
-        return Err("El archivo CSV no contiene filas de datos".to_string());
+        return Err("CSV file does not contain any data rows".to_string());
     }
     let second_line = second_line.trim_end_matches(&['\n', '\r'][..]).to_string();
 
     Ok((header_line, second_line))
 }
 
-/// Detect the CSV delimiter by selecting the character with the most occurrences in the header.
+/// Detects the CSV delimiter by analyzing the header line.
 ///
-/// Candidate delimiters: comma, semicolon, tab, pipe. Defaults to comma if none found.
+/// It counts occurrences of candidate delimiters (`,`, `;`, `\t`, `|`) and selects the
+/// one with the highest count. Defaults to comma (`,`) if no candidates are found.
+///
+/// # Arguments
+/// * `header_line` - The header string to analyze.
+///
+/// # Returns
+/// The detected delimiter character.
 fn detect_delimiter(header_line: &str) -> char {
     [',', ';', '\t', '|']
         .iter()
@@ -296,15 +413,20 @@ fn detect_delimiter(header_line: &str) -> char {
         .unwrap_or(',')
 }
 
-/// Main blocking verification function executed inside `spawn_blocking`.
+/// The main blocking verification function, designed to be run in `spawn_blocking`.
 ///
-/// Workflow summary:
-/// - Load template record from DB and ensure it is not already verified.
-/// - If the template is already verified **and** `datasource_md5 == last_verified_md5`,
-///   short-circuit and return inferred `ColumnCheck` from the first data line.
-/// - Otherwise proceed with the full verification flow (read file, validate headers, scan lines).
+/// This function contains the complete, synchronous logic for CSV verification, including
+/// database interaction, file I/O, and data validation. It sends status updates back to the
+/// main async context via the provided MPSC sender.
 ///
-/// Returns `Ok(String)` with JSON-serialized `ColumnCheck` vector on success, or `Err(String)` on failure.
+/// # Arguments
+/// * `tx` - The MPSC sender to communicate job status updates.
+/// * `job_id` - The unique ID for this verification job.
+/// * `template_id` - The ID of the template associated with the CSV file.
+///
+/// # Returns
+/// A `Result` containing a JSON `String` of the inferred `ColumnCheck` schema on success,
+/// or an error `String` on failure.
 fn verify_csv_data_blocking(
     tx: mpsc::Sender<JobUpdate>,
     job_id: String,
@@ -328,34 +450,28 @@ fn verify_csv_data_blocking(
                 row.get::<_, i32>(3)?,
             ))
         })
-        .map_err(|e| {
-            "Fallo al obtener la plantilla de la base de datos: ".to_string() + &e.to_string()
-        })?;
+        .map_err(|e| "Failed to get template from database: ".to_string() + &e.to_string())?;
 
     let (id, datasource_md5, last_verified_md5, verified) = template;
 
-    // Fast-path: require both MD5 presentes y coincidentes, y verified == 1
+    // Fast-path: If the file is already verified and unchanged, skip the full scan.
     if let (Some(ds_md5), Some(last_md5)) =
         (datasource_md5.as_deref(), last_verified_md5.as_deref())
     {
         if ds_md5 == last_md5 && verified == 1 {
-            // Build file path and open file
             let file_path = format!("./{}_{}.csv", id, ds_md5);
             if !Path::new(&file_path).exists() {
-                return Err("Archivo CSV no encontrado".to_string());
+                return Err("CSV file not found".to_string());
             }
             let file = File::open(&file_path).map_err(|e| e.to_string())?;
             let mut reader = BufReader::new(file);
 
-            // Read header and second line, detect delimiter
             let (header_line, second_line) = read_header_and_second_line(&mut reader)?;
             let delimiter = detect_delimiter(&header_line);
 
-            // Validate and normalize titles from header
             let titles = validate_and_normalize_titles(&header_line, delimiter)
-                .map_err(|e| format!("Validación de cabecera fallida: {}", e))?;
+                .map_err(|e| format!("Header validation failed: {}", e))?;
 
-            // Infer column checks and return JSON without scanning the whole file or updating DB
             let columns = infer_column_checks(&titles, &second_line, delimiter);
             let json_columns = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
 
@@ -372,24 +488,24 @@ fn verify_csv_data_blocking(
         }
     }
 
-    // If template has verified flag set (possible bug / partial verification), reset it to 0 and continue.
+    // If template has a stale verified flag, reset it and proceed with verification.
     if verified != 0 {
         conn.execute(
             "UPDATE templates SET verified = 0 WHERE id = ?1",
             params![id],
         )
-            .map_err(|e| format!("Fallo al restablecer el flag verified: {}", e))?;
+            .map_err(|e| format!("Failed to reset verified flag: {}", e))?;
         println!(
-            "La plantilla '{}' tenía verified != 0; restableciendo verified = 0 y continuando verificación",
+            "Template '{}' had verified != 0; resetting to 0 and continuing verification.",
             id
         );
     }
 
-    // Build file path and open file: datasource_md5 must be present to locate the file
+    // From here, proceed with full verification.
     let ds_md5 = match datasource_md5.as_deref() {
         Some(s) => s,
         None => {
-            // No datasource_md5: nothing que verificar -> revert to last (if any) then error
+            // No datasource to verify, attempt rollback and fail.
             update_template_verification(
                 &conn,
                 &id,
@@ -397,24 +513,22 @@ fn verify_csv_data_blocking(
                 last_verified_md5.as_deref(),
                 false,
             )
-                .map_err(|db_err| format!("Datasource MD5 ausente; fallo al revertir: {}", db_err))?;
-            return Err("Sin archivos de datos asociados para verificar".to_string());
+                .map_err(|db_err| format!("Datasource MD5 missing; rollback failed: {}", db_err))?;
+            return Err("No associated data file to verify".to_string());
         }
     };
 
     let file_path = format!("./{}_{}.csv", id, ds_md5);
     if !Path::new(&file_path).exists() {
-        return Err("Archivo CSV no encontrado".to_string());
+        return Err("CSV file not found".to_string());
     }
     let file = File::open(&file_path).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
 
-    // Read header and second line, detect delimiter
     let (header_line, second_line) = read_header_and_second_line(&mut reader)?;
     let delimiter = detect_delimiter(&header_line);
 
-    // Validate and normalize titles from header (ensures uniqueness and textual titles)
-    // If validation fails, revert datasource_md5 via update_template_verification(..., false)
+    // Validate headers. If it fails, roll back and exit.
     let titles = match validate_and_normalize_titles(&header_line, delimiter) {
         Ok(t) => t,
         Err(e) => {
@@ -427,11 +541,11 @@ fn verify_csv_data_blocking(
             )
                 .map_err(|db_err| {
                     format!(
-                        "Validación de cabecera fallida: {}; fallo al revertir: {}",
+                        "Header validation failed: {}; rollback failed: {}",
                         e, db_err
                     )
                 })?;
-            return Err(format!("Validación de cabecera fallida: {}", e));
+            return Err(format!("Header validation failed: {}", e));
         }
     };
 
@@ -440,10 +554,9 @@ fn verify_csv_data_blocking(
         title_to_index.insert(t.clone(), i);
     }
 
-    // Infer column checks from second line using normalized header titles
     let columns = infer_column_checks(&titles, &second_line, delimiter);
 
-    // Process file in chunks
+    // Process file in chunks, sending progress updates.
     let chunk_size = 250_000;
     let mut chunk = Vec::with_capacity(chunk_size);
     let mut lines_processed = 0usize;
@@ -474,6 +587,7 @@ fn verify_csv_data_blocking(
         }
     }
 
+    // Process the final partial chunk.
     if !chunk.is_empty() {
         process_and_handle_chunk(
             &tx,
@@ -490,8 +604,7 @@ fn verify_csv_data_blocking(
         )?;
     }
 
-    // If we reach here: verification successful
-    // Update DB: set verified and last_verified_md5 (allow NULL)
+    // If we reach here, verification was successful.
     update_template_verification(
         &conn,
         &id,
@@ -500,7 +613,6 @@ fn verify_csv_data_blocking(
         true,
     )?;
 
-    // Serialize inferred columns to JSON to return and to send in JobUpdate
     let json_columns = serde_json::to_string(&columns).map_err(|e| e.to_string())?;
 
     let _ = tx.blocking_send(JobUpdate {
@@ -512,9 +624,17 @@ fn verify_csv_data_blocking(
     Ok(json_columns)
 }
 
-/// HTTP handler that enqueues a verification job.
+/// The Actix web handler for `POST /api/data_sources/csv/verify`.
 ///
-/// Receives a JSON `VerifyCsvRequest`, schedules a background task and returns the generated job id.
+/// It receives a `VerifyCsvRequest`, schedules the background verification job,
+/// and immediately returns a job ID to the client.
+///
+/// # Arguments
+/// * `jobs_state` - The shared `JobsState` injected by Actix.
+/// * `req` - The JSON payload containing the `template_id` to verify.
+///
+/// # Returns
+/// An `HttpResponse` with the `job_id` on success, or an `InternalServerError` on failure.
 pub(crate) async fn process(
     jobs_state: web::Data<JobsState>,
     req: web::Json<VerifyCsvRequest>,
@@ -525,12 +645,18 @@ pub(crate) async fn process(
     }
 }
 
-/// Schedule a CSV verification job in the background.
+/// Schedules the CSV verification job to run in the background.
 ///
-/// Inserts a `Pending` job into `jobs_state`, spawns a task that runs
-/// `verify_csv_data_blocking` in a blocking thread and updates `jobs_state` on completion.
+/// This function creates a new job ID, sets its status to `Pending` in the shared `JobsState`,
+/// and spawns a Tokio task to perform the actual work. The heavy lifting is delegated to
+/// `verify_csv_data_blocking` inside a `spawn_blocking` call to avoid blocking the async runtime.
 ///
-/// Returns the generated job id on success.
+/// # Arguments
+/// * `jobs_state` - The application's shared `JobsState`.
+/// * `req` - The `VerifyCsvRequest` containing the template ID.
+///
+/// # Returns
+/// A `Result` containing the new `job_id` on success, or an error `String` on failure.
 async fn schedule_verify_job(
     jobs_state: web::Data<JobsState>,
     req: VerifyCsvRequest,
@@ -547,7 +673,6 @@ async fn schedule_verify_job(
     let uuid = req.uuid;
 
     tokio::spawn(async move {
-        // Clone values to move into the blocking task without consuming `value`
         let tx_block = tx.clone();
         let value_for_blocking = value.clone();
         let uuid_for_blocking = uuid.clone();
@@ -569,7 +694,7 @@ async fn schedule_verify_job(
             Err(join_err) => {
                 js.jobs.write().await.insert(
                     value,
-                    JobStatus::Failed(format!("error al esperar la tarea: {}", join_err)),
+                    JobStatus::Failed(format!("task join error: {}", join_err)),
                 );
             }
         }
@@ -578,33 +703,28 @@ async fn schedule_verify_job(
     Ok(job_id)
 }
 
-/// Processes a chunk of CSV lines and performs DB rollback if a validation failure occurs.
+/// Processes a chunk of CSV lines and handles validation failures by initiating a DB rollback.
 ///
-/// Behavior:
-/// - Calls `process_chunk_sync` to search for the first invalid row inside `chunk`.
-/// - If an invalid row is found:
-///   - `process_chunk_sync` will send a `JobUpdate::Failed` via `tx` with row and column details.
-///   - This function will call `update_template_verification(conn, id, datasource_md5, last_verified_md5, false)`
-///     to revert `datasource_md5` and mark the template as verified (rollback).
-///   - Returns `Err(String)` describing the failure (either validation or DB rollback error).
-/// - If no invalid rows are found, returns `Ok(())`.
+/// This function serves as a bridge between the synchronous chunk processing and the
+/// database rollback logic. If `process_chunk_sync` finds an invalid row, this function
+/// ensures the failure is reported and the database state is reverted.
 ///
-/// Parameters:
-/// - `tx`: sender for job updates (`JobUpdate`).
-/// - `job_id`: identifier of the running job (for messages).
-/// - `chunk`: slice of `(line_index, line_text)` to validate.
-/// - `columns`: inferred column specifications (`ColumnCheck`).
-/// - `title_to_index`: map from normalized title to column index.
-/// - `delimiter`: CSV delimiter character.
-/// - `start`: Instant used for logging in called helpers.
-/// - `conn`: database connection used to perform the rollback when needed.
-/// - `id`: template id in `templates` table.
-/// - `datasource_md5`: current datasource MD5 (to be reverted).
-/// - `last_verified_md5`: previously verified MD5 (restored on rollback).
+/// # Arguments
+/// * `tx` - Sender for `JobUpdate` messages.
+/// * `job_id` - The ID of the current job.
+/// * `chunk` - The slice of lines to validate.
+/// * `columns` - The inferred column schema.
+/// * `title_to_index` - Map from title to column index.
+/// * `delimiter` - The CSV delimiter character.
+/// * `start` - The job start time, for logging.
+/// * `conn` - The database connection for performing a rollback.
+/// * `id` - The template ID.
+/// * `datasource_md5` - The MD5 of the current file.
+/// * `last_verified_md5` - The MD5 of the last good file, for rollback.
 ///
-/// Returns:
-/// - `Ok(())` if the chunk processed without errors.
-/// - `Err(String)` if an invalid row was detected or if the rollback operation failed.
+/// # Returns
+/// `Ok(())` if the chunk is valid. `Err(String)` if an invalid row was found, which
+/// signals to the caller to stop processing.
 fn process_and_handle_chunk(
     tx: &mpsc::Sender<JobUpdate>,
     job_id: &str,
@@ -621,12 +741,12 @@ fn process_and_handle_chunk(
     if let Some((row, title, reason)) =
         process_chunk_sync(chunk, columns, title_to_index, delimiter)?
     {
-        // Notify to the job controller about the first invalid row
+        // Report the first invalid row found.
         handle_first_invalid_sync(tx, job_id, row, &title, &reason, start)?;
-        // Rollback the template verification state in the database
+        // Roll back the template verification state in the database.
         update_template_verification(conn, id, datasource_md5, last_verified_md5, false)?;
         return Err(format!(
-            "Verificación fallida: fila {}, columna '{}': {}",
+            "Verification failed: row {}, column '{}': {}",
             row, title, reason
         ));
     }
