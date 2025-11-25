@@ -1,16 +1,25 @@
 //! View rendering for the static text editor component.
 //!
-//! The UI is split across two tabs: "Editor" (a growing `<textarea>`) and
-//! "Preview" (a markdown preview). A simple icon toolbar provides formatting
-//! actions and image insertion. Inline images are represented by `[img:<id>]`
-//! tags in the text and are resolved to `<img>` elements in the preview.
+//! This module is responsible for rendering the entire UI of the editor,
+//! including the toolbar, tabs, and the active content pane (editor or preview).
+//! It translates user interactions (clicks, key presses, text input) into `Msg`
+//! variants that are sent to the `update` function to modify the component's state.
 //!
-//! Notes
-//! - All user-facing messages remain in Spanish by design.
-//! - The preview pipeline performs a whitespace-preserving trick: runs of
-//!   multiple newlines are temporarily replaced by markers, parsed by
-//!   `pulldown_cmark`, then expanded into repeated `<br>` tags to emulate a
-//!   loose paragraph style while preserving single newlines.
+//! UI Structure:
+//! - A top-level `view` function that orchestrates the layout.
+//! - A `build_toolbar` function that creates buttons for actions like undo/redo,
+//!   styling, saving, and opening dialogs. Each button dispatches a specific `Msg`.
+//! - A `build_tab_bar` for switching between the "editor" and "preview" panes.
+//! - An `build_editor_tab` that renders the `<textarea>` and handles complex
+//!   events like input, selection changes, and key presses for protected text.
+//! - A `build_preview_tab` that renders the HTML generated from the markdown text.
+//!
+//! Message Dispatching:
+//! - **Formatting**: `Msg::ApplyStyle`, `Msg::Undo`, `Msg::Redo`.
+//! - **File/Dialogs**: `Msg::OpenFileDialog`, `Msg::OpenImageDialogWithId`, `Msg::OpenPdf`.
+//! - **State Sync**: `Msg::UpdateText`, `Msg::AutoResize` on input and scroll.
+//! - **Persistence**: `Msg::Save`.
+//! - **Data Integration**: `Msg::InsertCsvColumnPlaceholder`, `Msg::CsvColumnsUpdated` from a child component.
 
 use super::helpers::{compute_md5, escape_html, get_img_tag_id_at_cursor};
 use super::messages::Msg;
@@ -27,7 +36,12 @@ use web_sys::{HtmlTextAreaElement, InputEvent};
 use yew::prelude::*;
 
 /// Renders the main view for the static text editor component.
-/// Displays the toolbar, tab bar, and the active pane (editor or preview).
+///
+/// This function serves as the root of the component's render tree. It delegates
+/// the construction of the UI to specialized helper functions for the toolbar,
+/// tab bar, and the active content pane (either the editor or the preview).
+///
+/// It computes the preview HTML ahead of time and passes it to the preview tab.
 pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>) -> Html {
     let link = ctx.link();
     let preview_html = compute_preview_html(component);
@@ -48,8 +62,20 @@ pub fn view(component: &StaticTextComponent, ctx: &Context<StaticTextComponent>)
     }
 }
 
-/// Builds the left toolbar with formatting buttons, image and CSV helper.
-/// Uses `icon_button`, `CsvDataSourceComponent` and forwards events via `link`.
+/// Builds the left-hand toolbar containing action buttons.
+///
+/// Each button is configured with an icon and a callback that dispatches a
+/// specific `Msg` to the update loop. This function is the primary source for
+/// user-initiated commands that are not direct text input.
+///
+/// Dispatched Messages:
+/// - `Msg::Undo`/`Msg::Redo`: Navigate the text history.
+/// - `Msg::ApplyStyle`: Insert markdown styling snippets.
+/// - `Msg::OpenFileDialog`: Trigger the hidden file input for image uploads.
+/// - `Msg::OpenPdf`: Request the generation and display of a PDF preview.
+/// - `Msg::Save`: Persist the current template to the backend.
+/// - `Msg::InsertCsvColumnPlaceholder`: (From child) Insert a CSV data placeholder.
+/// - `Msg::CsvColumnsUpdated`: (From child) Notify that the CSV source has changed.
 fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
     html! {
         <div class="icon-toolbar">
@@ -74,8 +100,10 @@ fn build_toolbar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
     }
 }
 
-/// Creates a style application callback for the toolbar.
-/// `link` is the component `Scope` and `style` is the style name to apply.
+/// Creates a `Callback` for a style-applying button.
+///
+/// This helper simplifies toolbar construction by creating a closure that sends
+/// the appropriate `Msg::ApplyStyle` variant when a style button is clicked.
 fn make_style_callback(
     link: &Scope<StaticTextComponent>,
     style: &'static str,
@@ -84,8 +112,12 @@ fn make_style_callback(
     link.callback(move |_| Msg::ApplyStyle(s.clone(), ()))
 }
 
-/// Builds the tab bar for switching between Editor and Preview.
-/// Shows a red dot if there are unsaved changes.
+/// Builds the tab bar for switching between "Editor" and "Preview" modes.
+///
+/// It renders two buttons that dispatch `Msg::SetTab` to change the `active_tab`
+/// field in the component's state. It also displays a "dirty" indicator (a red dot)
+/// on the "Editor" tab if the current text has unsaved changes, which is determined
+/// by comparing the MD5 hash of the current text with the one from the last save.
 fn build_tab_bar(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
     let dirty = component
         .original_md5
@@ -115,7 +147,7 @@ fn build_tab_bar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
                                         border-radius: 50%;
                                         display: inline-block;
                                         vertical-align: middle;
-                                    "
+                                      "
                             />
                         }
                     } else {
@@ -133,8 +165,18 @@ fn build_tab_bar(component: &StaticTextComponent, link: &Scope<StaticTextCompone
     }
 }
 
-/// Builds the editor tab UI: line numbers, textarea, and image dialog.
-/// Handles textarea events and protections for placeholders and image tags.
+/// Builds the editor tab, which includes the line numbers, the main `<textarea>`,
+/// and the associated dialogs for images and PDF previews.
+///
+/// This function is responsible for handling a wide range of events:
+/// - `oninput`: Dispatches `Msg::UpdateText` to sync the state with user input and
+///   `Msg::AutoResize` to adjust the textarea's height.
+/// - `onscroll`: Dispatches `Msg::AutoResize` to ensure line numbers stay aligned.
+/// - `onkeydown`: Intercepts key presses to implement undo/redo shortcuts (`Ctrl+Z`/`Ctrl+Y`)
+///   and to protect special text spans (like `[img:...]` and `[ph:...]`) from being
+///   edited or deleted improperly.
+/// - `onselect`: Detects if the cursor moves inside an `[img:...]` tag and dispatches
+///   `Msg::OpenImageDialogWithId` to show the relevant image management dialog.
 fn build_editor_tab(component: &StaticTextComponent, link: &Scope<StaticTextComponent>) -> Html {
     let line_count = component.text.lines().count().max(1);
     let line_numbers = (1..=line_count)
@@ -215,19 +257,22 @@ fn build_editor_tab(component: &StaticTextComponent, link: &Scope<StaticTextComp
     }
 }
 
-/// Builds the preview tab HTML wrapper.
-/// Receives precomputed `preview_html` and returns the preview container.
+/// Builds the preview tab's HTML container.
+///
+/// This function is straightforward: it takes the pre-rendered HTML string
+/// (computed by `compute_preview_html`) and injects it into a `div` using
+/// `Html::from_html_unchecked`. This is safe because the pipeline in
+/// `compute_preview_html` ensures all user-provided content is properly escaped.
 fn build_preview_tab(preview_html: AttrValue) -> Html {
     html! {
         <div class="markdown-preview">{ Html::from_html_unchecked(preview_html) }</div>
     }
 }
 
-/// Renders a toolbar button with a Material icon and a label.
-/// `icon_name`: Material icon name.
-/// `label`: Button label.
-/// `on_click`: Click event callback.
-/// `wide`: If true, uses wide button style.
+/// Renders a standardized toolbar button with a Material Design icon and a text label.
+///
+/// This is a simple presentational helper to reduce boilerplate in `build_toolbar`.
+/// It takes an icon name, a label, and a `Callback` to handle the `onclick` event.
 fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wide: bool) -> Html {
     let class = if wide { "icon-btn wide" } else { "icon-btn" };
     html! {
@@ -238,8 +283,11 @@ fn icon_button(icon_name: &str, label: &str, on_click: Callback<MouseEvent>, wid
     }
 }
 
-/// Returns `(start, end)` byte indexes of a `[ph:...:BASE64]` placeholder containing `cursor_pos`, or `None` if cursor is outside.
-/// The end index is exclusive.
+/// Finds the start and end byte indices of a `[ph:...:BASE64]` placeholder
+/// that contains the given `cursor_pos` (in UTF-16 units).
+///
+/// This is a helper used in the `onkeydown` handler to determine if the cursor
+/// is inside a protected placeholder, preventing accidental edits.
 fn get_ph_bounds_at_cursor(text: &str, cursor_pos: usize) -> Option<(usize, usize)> {
     let pos = cursor_pos.min(text.len());
     if let Some(start) = text[..pos].rfind("[ph:") {
@@ -258,8 +306,8 @@ use uuid::Uuid;
 use yew::html::Scope;
 use yew::virtual_dom::AttrValue;
 
-/// Normalizes line endings and trims invisible characters at the start.
-/// Converts CRLF and CR to LF. Removes BOM / zero-width spaces at the beginning.
+/// Normalizes line endings (CRLF/CR to LF) and removes leading zero-width characters.
+/// This ensures consistent text processing across different platforms and editors.
 fn normalize_text(input: &str) -> String {
     input
         .replace("\r\n", "\n")
@@ -268,15 +316,20 @@ fn normalize_text(input: &str) -> String {
         .to_string()
 }
 
-/// Preserves single-newline spacing before markdown parsing.
-/// Replaces each `\n` with ` \n` to encourage pulldown_cmark to keep single newlines.
+/// Inserts a space before each single newline.
+/// This is a trick to force the `pulldown_cmark` parser to treat single newlines
+/// as significant whitespace (like a `<br>`), which is often desired in this
+/// type of editor, rather than collapsing them.
 fn preserve_single_newline_trick(input: &str) -> String {
     input.replace("\n", " \n")
 }
 
-/// Finds `[ph:TITLE:BASE64]` placeholders and replaces them with unique tokens.
-/// Returns the transformed text and a vector of `(token, html_snippet)` replacements.
-/// The HTML snippets are escaped and safe for reinsertion.
+/// Finds all `[ph:TITLE:BASE64]` placeholders, replaces them with unique temporary
+/// tokens, and returns the modified text along with a list of token-to-HTML mappings.
+///
+/// This is a key step in the preview pipeline. It extracts placeholders before
+/// markdown parsing to prevent them from being misinterpreted. The Base64 content
+/// is decoded and escaped to create a safe HTML `<span>` for later re-insertion.
 fn replace_ph_placeholders(input: &str) -> (String, Vec<(String, String)>) {
     let ph_re = Regex::new(r"\[ph:([^:\]]+):([A-Za-z0-9+/=]+)]").unwrap();
     let mut replacements: Vec<(String, String)> = Vec::new();
@@ -312,8 +365,7 @@ fn replace_ph_placeholders(input: &str) -> (String, Vec<(String, String)>) {
     (text_with_tokens, replacements)
 }
 
-
-/// Parses Markdown text into HTML using pulldown_cmark.
+/// Parses a markdown string into an HTML string using `pulldown_cmark`.
 fn parse_markdown_to_html(input: &str) -> String {
     let parser = Parser::new(input);
     let mut html_output = String::new();
@@ -321,7 +373,8 @@ fn parse_markdown_to_html(input: &str) -> String {
     html_output
 }
 
-/// Expands `BR_MARKER{N}` placeholders into repeated `<br>` tags.
+/// Replaces `BR_MARKER{N}` placeholders with `N` repeated `<br>` tags.
+/// This function re-inflates the compressed newline sequences after markdown parsing.
 fn expand_br_markers(input: &str) -> String {
     let re_br = Regex::new(r"BR_MARKER(\d+)").unwrap();
     re_br
@@ -332,7 +385,9 @@ fn expand_br_markers(input: &str) -> String {
         .into_owned()
 }
 
-/// Replaces previously generated PH... tokens with their safe HTML snippets.
+/// Re-inserts the HTML for placeholders by replacing the temporary tokens.
+/// This step happens after markdown parsing to ensure the placeholder HTML is
+/// rendered verbatim and not processed as markdown.
 fn replace_tokens_with_html(mut html: String, replacements: &[(String, String)]) -> String {
     for (token, snippet) in replacements {
         html = html.replace(token, snippet);
@@ -340,8 +395,10 @@ fn replace_tokens_with_html(mut html: String, replacements: &[(String, String)])
     html
 }
 
-/// Resolves inline template images of the form `[img:<id>]` into data URLs.
-/// Uses `component.template.images` to find matches and substitute with `<img ... />` elements.
+/// Finds `[img:<id>]` tags in the final HTML and replaces them with `<img>` elements.
+///
+/// It looks up each image ID in the `component.template.images` vector to find the
+/// corresponding Base64 data, constructing a data URL for the `src` attribute.
 fn resolve_inline_images(mut html: String, component: &StaticTextComponent) -> String {
     if let Some(template) = &component.template {
         if let Some(images) = &template.images {
@@ -358,9 +415,11 @@ fn resolve_inline_images(mut html: String, component: &StaticTextComponent) -> S
     html
 }
 
-/// Compresses multiple consecutive empty lines after any line into a marker.
-/// This marker is later expanded into repeated `<br>` tags in the preview.
-/// Preserves multiple newlines after any line, including normal text and styled lines.
+/// Compresses sequences of multiple empty lines into a single `BR_MARKER{N}` token.
+///
+/// This allows the editor to preserve intentional vertical spacing (e.g., multiple
+/// blank lines) which would otherwise be collapsed by the markdown parser. The
+/// markers are expanded back into `<br>` tags later in the pipeline.
 fn compress_newlines_after_any_line(input: &str) -> String {
     let lines: Vec<&str> = input.lines().collect();
     let mut result = String::new();
@@ -368,7 +427,7 @@ fn compress_newlines_after_any_line(input: &str) -> String {
     while i < lines.len() {
         result.push_str(lines[i]);
         result.push('\n');
-        // Detect múltiples líneas vacías después de cualquier línea
+        // Detect multiple empty lines after any line
         let mut count = 0;
         let mut j = i + 1;
         while j < lines.len() && lines[j].trim().is_empty() {
@@ -385,10 +444,22 @@ fn compress_newlines_after_any_line(input: &str) -> String {
     result
 }
 
-/// Main orchestrator for the preview HTML pipeline.
-/// Runs normalization, newline compression, single-newline preservation, placeholder replacement,
-/// markdown parsing, marker expansion, placeholder reinsertion, and image resolution.
-/// Returns an `AttrValue` for Yew.
+/// Orchestrates the entire pipeline for generating the preview HTML.
+///
+/// This function executes a series of transformations on the raw text to produce
+/// a final, safe, and correctly formatted HTML string for the preview pane.
+/// The steps are carefully ordered to handle placeholders, newlines, markdown,
+/// and inline images correctly.
+///
+/// Pipeline:
+/// 1. `normalize_text`: Clean up line endings and invisible characters.
+/// 2. `compress_newlines_after_any_line`: Convert multiple blank lines to markers.
+/// 3. `preserve_single_newline_trick`: Ensure single newlines become `<br>`.
+/// 4. `replace_ph_placeholders`: Extract placeholders into tokens.
+/// 5. `parse_markdown_to_html`: Process the cleaned text with `pulldown_cmark`.
+/// 6. `expand_br_markers`: Convert newline markers back to `<br>` tags.
+/// 7. `replace_tokens_with_html`: Re-insert placeholder HTML.
+/// 8. `resolve_inline_images`: Convert `[img:...]` tags to `<img>` elements.
 pub fn compute_preview_html(component: &StaticTextComponent) -> AttrValue {
     let text = normalize_text(&component.text);
     let text = compress_newlines_after_any_line(&text);

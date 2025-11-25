@@ -12,6 +12,7 @@
 //! - Handling image insertion: upload -> base64 -> `[img:<uuid>]` tag -> template images list.
 //! - Deleting images, which removes both the asset and its inline tag.
 //! - Persisting the template via a backend POST, with user-facing toast messages (Spanish).
+//! - Generating and displaying a PDF preview of the template.
 
 use base64::{engine::general_purpose, Engine as _};
 use gloo_file::{futures::read_as_bytes, Blob};
@@ -47,6 +48,10 @@ pub fn update(
     msg: Msg,
 ) -> bool {
     match msg {
+        // **`UpdateText(new_text)`**: Handles user input from the textarea.
+        // It updates the component's `text` state, manages the undo/redo history by
+        // pushing the new text onto the history stack, and sets a global 'dirty' flag
+        // to indicate unsaved changes. Returns `true` to re-render.
         Msg::UpdateText(new_text) => {
             if component.text != new_text {
                 component.text = new_text.clone();
@@ -59,6 +64,9 @@ pub fn update(
             }
             true
         }
+        // **`Undo`**: Navigates backward in the history stack.
+        // It decrements the `history_index`, updates the `text` state to the previous
+        // version, and updates the dirty flag. Returns `true` to re-render.
         Msg::Undo => {
             if component.history_index > 0 {
                 component.history_index -= 1;
@@ -68,6 +76,9 @@ pub fn update(
             }
             true
         }
+        // **`Redo`**: Navigates forward in the history stack.
+        // It increments the `history_index`, updates the `text` state to the next
+        // version, and updates the dirty flag. Returns `true` to re-render.
         Msg::Redo => {
             if component.history_index + 1 < component.history.len() {
                 component.history_index += 1;
@@ -77,6 +88,9 @@ pub fn update(
             }
             true
         }
+        // **`SetTab(tab)`**: Switches the active view between "editor" and "preview".
+        // If switching to the editor, it schedules an `AutoResize` message to ensure
+        // the textarea height is correct. Returns `true` to re-render the new tab.
         Msg::SetTab(tab) => {
             component.active_tab = tab;
             if component.active_tab == "editor" {
@@ -90,6 +104,10 @@ pub fn update(
             }
             true
         }
+        // **`ApplyStyle(style, _)`**: Inserts a markdown-style snippet at the cursor.
+        // It wraps the selected text (or inserts a placeholder) with style markers
+        // like `**` for bold or `*` for italic, then programmatically selects the
+        // placeholder text for immediate editing. Updates the dirty flag. Returns `true`.
         Msg::ApplyStyle(style, _) => {
             if let Some(document) = web_sys::window().and_then(|w| w.document()) {
                 if let Some(textarea) = document
@@ -146,6 +164,10 @@ pub fn update(
             }
             true
         }
+        // **`AutoResize`**: Synchronizes component state with the textarea content.
+        // It adjusts the textarea's height to fit its content, updates the `template.text`
+        // model, and removes any image data from `template.images` if its corresponding
+        // `[img:...]` tag is no longer in the text. Returns `false` as it's a background task.
         Msg::AutoResize => {
             component.resize_textarea();
             if let Some(template) = &mut component.template {
@@ -163,12 +185,19 @@ pub fn update(
 
             false
         }
+        // **`OpenFileDialog`**: Programmatically triggers the hidden file input.
+        // This allows using a styled button to open the browser's file selection dialog
+        // for image uploads. Returns `false` as it's a side effect.
         Msg::OpenFileDialog => {
             if let Some(input) = component.file_input_ref.cast::<web_sys::HtmlInputElement>() {
                 input.click();
             }
             false
         }
+        // **`FileSelected(file)`**: Handles the result of a file dialog selection.
+        // It generates a unique ID for the new image, inserts an `[img:<id>]` tag at the
+        // cursor, and spawns an async task to read the file as bytes and send an
+        // `AddImageToTemplate` message with the Base64 data. Returns `true`.
         Msg::FileSelected(file) => {
             use uuid::Uuid;
             let uuid = Uuid::new_v4().to_string();
@@ -221,6 +250,9 @@ pub fn update(
             }
             true
         }
+        // **`AddImageToTemplate { id, base64 }`**: Adds image data to the in-memory template.
+        // This is the callback from `FileSelected`. It creates an `Image` struct and adds
+        // it to the `template.images` vector. Returns `false`.
         Msg::AddImageToTemplate { id, base64 } => {
             let image = Image { id, base64 };
             if let Some(template) = &mut component.template {
@@ -237,11 +269,17 @@ pub fn update(
             }
             false
         }
+        // **`OpenImageDialogWithId(id)`**: Opens the image management dialog.
+        // Triggered when the user's selection enters an `[img:...]` tag. It sets the
+        // `selected_image_id` state and opens the top sheet dialog. Returns `true`.
         Msg::OpenImageDialogWithId(id) => {
             component.selected_image_id = Some(id);
             open_top_sheet(component.image_dialog_ref.clone());
             true
         }
+        // **`DeleteImage(id)`**: Removes an image from the template.
+        // It removes the image data from `template.images` and strips all occurrences
+        // of its `[img:...]` tag from the editor text. Updates the dirty flag. Returns `true`.
         Msg::DeleteImage(id) => {
             if let Some(template) = &mut component.template {
                 if let Some(images) = &mut template.images {
@@ -257,6 +295,10 @@ pub fn update(
             set_window_dirty_flag(component);
             true
         }
+        // **`Save`**: Persists the current template to the backend.
+        // It sends the entire `template` object (ID, text, and images) to the
+        // `/api/templates/save` endpoint. On success, it dispatches `SaveSucceeded`.
+        // Shows toast notifications for success or failure. Returns `false`.
         Msg::Save => {
             let template = component.template.get_or_insert_with(|| Template {
                 id: String::new(),
@@ -295,6 +337,10 @@ pub fn update(
 
             false
         }
+        // **`SetTemplate(template_opt)`**: Replaces the component's entire template.
+        // Typically used on initial load. It sets the `template` state and calculates
+        // the `original_md5` hash of the text, which is used to track unsaved changes.
+        // Returns `true`.
         Msg::SetTemplate(template_opt) => {
             component.template = template_opt;
             component.original_md5 = component.template.as_ref().map(|t| compute_md5(&t.text));
@@ -303,7 +349,9 @@ pub fn update(
             set_window_dirty_flag(component);
             true
         }
-
+        // **`InsertCsvColumnPlaceholder(col_check)`**: Inserts a CSV data placeholder.
+        // It creates a `[ph:TITLE:BASE64]` tag using data from the selected CSV column
+        // and inserts it at the current cursor position in the textarea. Returns `true`.
         Msg::InsertCsvColumnPlaceholder(col_check) => {
             if let Some(textarea) = component.textarea_ref.cast::<HtmlTextAreaElement>() {
                 let utf16_pos = textarea.selection_start().unwrap_or(Some(0)).unwrap_or(0) as usize;
@@ -335,6 +383,10 @@ pub fn update(
                 false
             }
         }
+        // **`CsvColumnsUpdated(cols)`**: Prunes placeholders for removed CSV columns.
+        // When the associated CSV file changes, this message is sent with the new set of
+        // valid columns. It scans the text and removes any `[ph:...]` placeholders whose
+        // title no longer exists in the new column list. Returns `true` if text changed.
         Msg::CsvColumnsUpdated(cols) => {
             // Build a set of allowed titles
             let allowed: HashSet<String> = cols.into_iter().map(|c| c.title).collect();
@@ -373,6 +425,9 @@ pub fn update(
             }
             false
         }
+        // **`SaveSucceeded`**: Updates the dirty-checking baseline after a successful save.
+        // It recalculates `original_md5` with the current text content, effectively marking
+        // the current state as "saved". Resets the global dirty flag. Returns `true`.
         Msg::SaveSucceeded => {
             component.original_md5 = Some(compute_md5(&component.text));
 
@@ -380,6 +435,10 @@ pub fn update(
             set_window_dirty_flag(component);
             true
         }
+        // **`OpenPdf`**: Prepares and opens the PDF preview dialog.
+        // It checks for unsaved changes, then sets the `pdf_url` to the backend endpoint
+        // `/api/templates/pdf/{id}`, including a cache-busting timestamp. It also sets
+        // `pdf_loading` to `true` and opens the dialog. Returns `true`.
         Msg::OpenPdf => {
             if let Some(template) = &component.template {
                 if template.id.is_empty() {
@@ -413,12 +472,17 @@ pub fn update(
             }
             true
         }
-
+        // **`PdfLoaded`**: Acknowledges that the PDF iframe has finished loading.
+        // This message is sent from the `pdf_dialog`'s `onload` event. It sets the
+        // `pdf_loading` flag to `false`, hiding any loading indicators. Returns `true`.
         Msg::PdfLoaded => {
             // El iframe ha terminado de cargar
             component.pdf_loading = false;
             true
         }
+        // **`ClosePdfDialog`**: Resets state related to the PDF viewer.
+        // It clears the `pdf_url` and `pdf_loading` flags, effectively closing the
+        // PDF preview dialog and cleaning up its state. Returns `true`.
         Msg::ClosePdfDialog => {
             component.pdf_url = None;
             component.pdf_loading = false;
@@ -428,6 +492,7 @@ pub fn update(
 }
 
 /// Sets the global `app_dirty` flag based on whether the current text
+/// differs from the last saved state (`original_md5`).
 fn set_window_dirty_flag(component: &StaticTextComponent) {
     if let Some(window) = web_sys::window() {
         let dirty = component
