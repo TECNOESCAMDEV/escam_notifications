@@ -127,7 +127,7 @@ pub async fn process(
 ///
 /// # Returns
 /// An empty `Result` on success, or a `Box<dyn Error>` on failure.
-pub fn generate_pdf_from_template_to_path(
+fn generate_pdf_from_template_to_path(
     template_id: &str,
     output_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
