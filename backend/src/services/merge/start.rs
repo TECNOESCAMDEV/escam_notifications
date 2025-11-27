@@ -24,20 +24,24 @@
 //!     template's associated data source has been successfully verified (`verified = 1`).
 //!     It retrieves the `datasource_md5` to locate the correct CSV file.
 //!
-//! 5.  **CSV Processing**: It reads the CSV file, determines the delimiter, and parses the header
-//!     and all data rows.
+//! 5.  **CSV Processing & Parallelization**: It reads the CSV file header and then uses the `rayon`
+//!     crate to process each data row in parallel. This significantly speeds up the generation
+//!     of a large number of PDFs.
 //!
-//! 6.  **Iterative PDF Generation**: The function iterates through each row of the CSV data.
-//!     For each row, it calls `generate_pdf_for_task`.
-//!     - `generate_pdf_for_task` fetches the template text, substitutes the placeholders
+//! 6.  **Iterative PDF Generation**: For each row, a task is spawned in a `rayon` thread pool.
+//!     - It calls `generate_pdf_for_task`, which fetches the template text, substitutes placeholders
 //!       (e.g., `{{column_name}}`) with the corresponding values from the current row, and
 //!       leverages the `services::templates::pdf` module to render a complete PDF.
 //!     - Each generated PDF is saved with a unique name (e.g., `{job_id}_{row_index}.pdf`).
 //!
-//! 7.  **Progress Reporting**: Throughout the process, the worker thread sends `MergeUpdate`
-//!     messages back to the async context. These updates report per-task progress (which is
-//!     translated into a percentage) or final failure/completion status. These are then
-//!     forwarded to the central `job_controller` to update the global job state.
+//! 7.  **Progress Reporting**: A two-tiered channel system reports progress without blocking:
+//!     - The synchronous `rayon` threads send `MergeUpdate` messages to an async listener task.
+//!     - This listener translates these updates into `JobUpdate` messages (with calculated percentages)
+//!       and forwards them to the central `job_controller` to update the global job state.
+//!
+//! 8.  **Error Handling**: The parallel processing uses an `Arc<Mutex>` to capture the *first*
+//!     error that occurs in any thread. Once an error is captured, all other threads stop
+//!     processing new rows, and the job is marked as `Failed`.
 
 use crate::job_controller::state::{JobUpdate, JobsState};
 use crate::services::data_sources::csv::verify::{
@@ -53,6 +57,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -201,7 +206,7 @@ async fn schedule_merge_job(
 /// The main synchronous merge function, designed to be run via `spawn_blocking`.
 ///
 /// This function contains the complete, synchronous logic for the CSV merge, including
-/// database interaction, file I/O, and PDF generation. It sends status updates
+/// database interaction, file I/O, and parallel PDF generation using `rayon`. It sends status updates
 /// back to the main async context via the provided MPSC sender.
 ///
 /// # Arguments
@@ -216,67 +221,119 @@ fn merge_blocking(
     job_id: &str,
     template_id: &str,
 ) -> Result<(), String> {
-    // Report that the job is now in progress.
+    // Send initial progress update.
     let _ = tx.blocking_send(MergeUpdate::Job(JobStatus::InProgress(0)));
 
     let conn = Connection::open("templify.sqlite").map_err(|e| e.to_string())?;
 
-    // Fetch template metadata to ensure it's ready for merging.
+    // Fetch template metadata to find the correct CSV file and check verification status.
     let (_id, datasource_md5, verified) =
         get_template_metadata(&conn, template_id).map_err(|e| e.to_string())?;
 
-    // The data source must be verified before a merge can be performed.
+    // The data source must be verified before a merge can proceed.
     if verified != 1 {
         let err_msg = "Template data source has not been verified.".to_string();
-        // Report failure and exit early.
         let _ = tx.blocking_send(MergeUpdate::Job(JobStatus::Failed(err_msg.clone())));
         return Err(err_msg);
     }
 
-    // Construct the data source filename from the template ID and the stored MD5 hash.
     let ds_md5 = datasource_md5.ok_or("Datasource MD5 not found for verified template.")?;
     let file_path = format!("./{}_{}.csv", template_id, ds_md5);
     let file = fs::File::open(&file_path).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
 
-    // Reuse verification logic to parse the CSV header.
+    // Read header and determine CSV delimiter.
     let (header_line, _) = read_header_and_second_line(&mut reader)?;
     let delimiter = detect_delimiter(&header_line);
-    let titles = validate_and_normalize_titles(&header_line, delimiter)?;
+    let titles = Arc::new(validate_and_normalize_titles(&header_line, delimiter)?);
 
-    // Read all data rows into memory.
-    let lines: Vec<String> = reader
+    // Count total lines for progress reporting without loading the whole file into memory.
+    let total_rows = BufReader::new(fs::File::open(&file_path).map_err(|e| e.to_string())?)
         .lines()
-        .collect::<Result<_, _>>()
+        .skip(1) // Skip header
+        .count();
+
+    // --- Parallel processing with Rayon ---
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(10) // Limit concurrency to 10 threads.
+        .build()
         .map_err(|e| e.to_string())?;
-    let total_rows = lines.len();
 
-    // Process each data row to generate a PDF.
-    for (i, line) in lines.iter().enumerate() {
-        let mut placeholders = HashMap::new();
-        let values: Vec<&str> = line.split(delimiter).collect();
-        for (j, title) in titles.iter().enumerate() {
-            if let Some(value) = values.get(j) {
-                placeholders.insert(title.clone(), value.to_string());
+    // Use a shared, thread-safe container to capture the first error that occurs.
+    let first_error = Arc::new(Mutex::new(None::<String>));
+
+    let value = first_error.clone();
+    pool.scope(move |s| {
+        // Iterate over the remaining lines of the file (data rows).
+        for (i, line_result) in reader.lines().enumerate() {
+            // If an error has already occurred in another thread, stop processing new lines.
+            if value.lock().unwrap().is_some() {
+                break;
             }
+
+            let line = match line_result {
+                Ok(l) => l,
+                Err(e) => {
+                    // If there's an error reading a line, capture it and break.
+                    let mut error_guard = value.lock().unwrap();
+                    *error_guard = Some(format!("Error reading line {}: {}", i, e));
+                    break;
+                }
+            };
+
+            // Clone necessary variables to move into the spawned thread.
+            let tx_clone = tx.clone();
+            let titles_clone = Arc::clone(&titles);
+            let job_id_clone = job_id.to_string();
+            let template_id_clone = template_id.to_string();
+            let first_error_clone = Arc::clone(&value);
+
+            s.spawn(move |_| {
+                // Before doing any work, check if another thread has already failed.
+                if first_error_clone.lock().unwrap().is_some() {
+                    return;
+                }
+
+                // Parse the current CSV line into a map of placeholders.
+                let mut placeholders = HashMap::new();
+                let values: Vec<&str> = line.split(delimiter).collect();
+                for (j, title) in titles_clone.iter().enumerate() {
+                    if let Some(value) = values.get(j) {
+                        placeholders.insert(title.clone(), value.to_string());
+                    }
+                }
+
+                let output_filename = format!("{}_{}.pdf", job_id_clone, i);
+                let output_path = Path::new("./pdfs").join(&output_filename);
+
+                // Generate the PDF for the current row.
+                if let Err(e) =
+                    generate_pdf_for_task(&template_id_clone, &placeholders, &output_path)
+                {
+                    let err_msg = format!("Failed to generate PDF for row {}: {}", i + 1, e);
+                    let mut error_guard = first_error_clone.lock().unwrap();
+                    // Only store the very first error to occur.
+                    if error_guard.is_none() {
+                        *error_guard = Some(err_msg.clone());
+                        // Immediately report the failure.
+                        let _ =
+                            tx_clone.blocking_send(MergeUpdate::Job(JobStatus::Failed(err_msg)));
+                    }
+                    return; // Stop this thread's execution.
+                }
+
+                // Report successful processing of this row.
+                let _ = tx_clone.blocking_send(MergeUpdate::Task {
+                    row_index: i,
+                    total_rows,
+                });
+            });
         }
+    });
 
-        // Define a unique output path for each PDF.
-        let output_filename = format!("{}_{}.pdf", job_id, i);
-        let output_path = Path::new("./pdfs").join(&output_filename);
-
-        if let Err(e) = generate_pdf_for_task(template_id, &placeholders, &output_path) {
-            // If a single PDF generation fails, fail the entire job.
-            let err_msg = format!("Failed to generate PDF for row {}: {}", i + 1, e);
-            let _ = tx.blocking_send(MergeUpdate::Job(JobStatus::Failed(err_msg.clone())));
-            return Err(err_msg);
-        }
-
-        // Send a progress update after each successful task.
-        let _ = tx.blocking_send(MergeUpdate::Task {
-            row_index: i,
-            total_rows,
-        });
+    // After the pool finishes, check if any error was captured.
+    if let Some(err_msg) = first_error.lock().unwrap().take() {
+        return Err(err_msg);
     }
 
     Ok(())
@@ -308,13 +365,13 @@ fn generate_pdf_for_task(
         .map_err(|e| e.to_string())?;
 
     // --- Placeholder Substitution ---
-    // Regex to find placeholders like `[ph:title:base64_value]`
-    // Captures the 'title' in the first group.
+    // This regex is designed to find placeholders created by the frontend, which have the format
+    // `[ph:COLUMN_NAME:BASE64_ENCODED_DEFAULT_VALUE]`. We only care about the COLUMN_NAME.
     let re = Regex::new(r"\[ph:([^:]+):[^\]]+\]").map_err(|e| e.to_string())?;
 
     // Replace each found placeholder using a closure.
     let substituted_text = re.replace_all(&template_text, |caps: &regex::Captures| {
-        // Get the column title captured by the regex (e.g., "temperatures").
+        // Get the column title captured by the regex (e.g., "name" or "email").
         let column_title = &caps[1];
         // Look up the corresponding value in the current row's data.
         // If not found, replace with an empty string.
@@ -326,7 +383,7 @@ fn generate_pdf_for_task(
     let mut doc = pdf::configure_document().map_err(|e| e.to_string())?;
     let mut temp_files = Vec::new(); // To manage the lifetime of temporary image files.
 
-    // Process the substituted template text line by line.
+    // Process the substituted template text line by line, using the same logic as the PDF preview.
     for line in substituted_text.lines() {
         if line.starts_with("[img:") && line.ends_with(']') {
             pdf::handle_image_line(line, &images_map, &mut temp_files, &mut doc)
@@ -336,6 +393,7 @@ fn generate_pdf_for_task(
         } else {
             // The line is treated as normal text.
             // `[ph:...]` placeholders have already been replaced with their actual values.
+            // The `handle_normal_line` function will parse any markdown styling (e.g., **bold**).
             pdf::handle_normal_line(line, &mut doc);
         }
     }
