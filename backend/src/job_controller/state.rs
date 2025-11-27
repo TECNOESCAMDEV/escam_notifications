@@ -12,7 +12,7 @@
 //! - `start_job_updater`: A long-running task that listens for `JobUpdate` messages
 //!   on an MPSC channel and updates the shared `JobsState` accordingly.
 
-use common::jobs::JobStatus;
+pub(crate) use common::jobs::JobStatus;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 

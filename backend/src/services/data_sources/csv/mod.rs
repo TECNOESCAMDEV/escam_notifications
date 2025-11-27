@@ -25,7 +25,7 @@ use actix_web::Scope;
 
 mod get_status;
 mod upload;
-mod verify;
+pub(crate) mod verify;
 
 const API_PATH: &str = "/api/data_sources/csv";
 

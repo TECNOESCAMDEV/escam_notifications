@@ -69,7 +69,7 @@ enum TextStyle {
 
 /// Represents a segment of text with a specific style.
 /// This is used to construct paragraphs with mixed styling (e.g., "This is **bold** text.").
-struct TextSegment {
+pub struct TextSegment {
     text: String,
     style: TextStyle,
 }
@@ -188,7 +188,7 @@ fn generate_pdf_from_template_to_path(
 /// # Arguments
 /// * `p` - The `Paragraph` to which the styled text will be added.
 /// * `segments` - A slice of `TextSegment`s to add.
-fn push_segments_into_paragraph(p: &mut Paragraph, segments: &[TextSegment]) {
+pub(crate) fn push_segments_into_paragraph(p: &mut Paragraph, segments: &[TextSegment]) {
     for seg in segments {
         let styled = match seg.style {
             TextStyle::Regular => StyledString::new(seg.text.clone(), Style::new()),
@@ -209,7 +209,7 @@ fn push_segments_into_paragraph(p: &mut Paragraph, segments: &[TextSegment]) {
 ///
 /// # Returns
 /// A `Vec<TextSegment>` representing the parsed line with styles.
-fn parse_styles(line: &str) -> Vec<TextSegment> {
+pub(crate) fn parse_styles(line: &str) -> Vec<TextSegment> {
     let mut segments = Vec::new();
     let chars: Vec<char> = line.chars().collect();
     let mut i: usize = 0;
@@ -336,7 +336,7 @@ fn push_styled_text_with_breaks_to_doc(doc: &mut Document, text: &str) {
 /// # Returns
 /// A `Result` containing a `HashMap` mapping image IDs to their raw byte data,
 /// or a `Box<dyn Error>` on failure.
-fn load_images(
+pub(crate) fn load_images(
     conn: &Connection,
     template_id: &str,
 ) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
@@ -359,7 +359,7 @@ fn load_images(
 ///
 /// # Returns
 /// A `Result` containing the configured `Document` or a `Box<dyn Error>` on failure.
-fn configure_document() -> Result<Document, Box<dyn Error>> {
+pub(crate) fn configure_document() -> Result<Document, Box<dyn Error>> {
     let font_family = load_font()?;
     let mut doc = Document::new(font_family);
     doc.set_title("Output from template");
@@ -382,7 +382,7 @@ fn configure_document() -> Result<Document, Box<dyn Error>> {
 /// # Arguments
 /// * `doc` - The `Document` to which the list item will be added.
 /// * `item_text` - The text of the list item (without the "- " prefix).
-fn handle_list_item(doc: &mut Document, item_text: &str) {
+pub(crate) fn handle_list_item(doc: &mut Document, item_text: &str) {
     let segments = parse_styles(item_text);
     let mut p = Paragraph::new("");
     p.push("• "); // Add a bullet point prefix.
@@ -404,7 +404,7 @@ fn handle_list_item(doc: &mut Document, item_text: &str) {
 ///
 /// # Returns
 /// An empty `Result` on success, or a `Box<dyn Error>` on failure.
-fn handle_image_line(
+pub(crate) fn handle_image_line(
     line: &str,
     images_map: &HashMap<String, Vec<u8>>,
     temp_files: &mut Vec<NamedTempFile>,
@@ -499,7 +499,7 @@ fn handle_placeholder_line(line: &str, doc: &mut Document) {
 /// # Arguments
 /// * `line` - The line of text to process.
 /// * `doc` - The `Document` to which the paragraph will be added.
-fn handle_normal_line(line: &str, doc: &mut Document) {
+pub(crate) fn handle_normal_line(line: &str, doc: &mut Document) {
     let segments = parse_styles(line);
     let mut p = Paragraph::new("");
     push_segments_into_paragraph(&mut p, &segments);

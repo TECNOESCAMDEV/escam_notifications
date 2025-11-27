@@ -72,6 +72,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(jobs_state.clone()))
             .service(services::templates::configure_routes())
             .service(services::data_sources::csv::configure_routes())
+            .service(services::merge::configure_routes()) // Añadir esta línea
             .default_service(web::route().to(serve_embedded))
     })
         .bind((host, port))?

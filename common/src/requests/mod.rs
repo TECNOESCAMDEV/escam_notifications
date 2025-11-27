@@ -35,3 +35,11 @@ pub struct VerifyCsvRequest {
     /// request to the correct template and its corresponding data file on the server.
     pub uuid: String,
 }
+
+/// Represents the payload for a request to `POST /api/merge/start`.
+/// Starts a background job to generate PDFs from a template and its associated CSV data source.
+#[derive(Deserialize)]
+pub struct StartMergeRequest {
+    /// The unique identifier (UUID) of the template to use for the merge.
+    pub template_id: String,
+}

@@ -173,7 +173,7 @@ fn normalize_cell(cell: &str) -> String {
 ///
 /// # Returns
 /// A `Result` containing a `Vec<String>` of normalized titles on success, or an error `String` on failure.
-fn validate_and_normalize_titles(
+pub(crate) fn validate_and_normalize_titles(
     header_line: &str,
     delimiter: char,
 ) -> Result<Vec<String>, String> {
@@ -375,7 +375,9 @@ fn process_chunk_sync(
 /// # Returns
 /// A `Result` containing a tuple `(header_line, second_line)` on success, or an
 /// error `String` if the file is empty, contains no data rows, or a read error occurs.
-fn read_header_and_second_line(reader: &mut BufReader<File>) -> Result<(String, String), String> {
+pub(crate) fn read_header_and_second_line(
+    reader: &mut BufReader<File>,
+) -> Result<(String, String), String> {
     let mut header_line = String::new();
     reader
         .read_line(&mut header_line)
@@ -405,7 +407,7 @@ fn read_header_and_second_line(reader: &mut BufReader<File>) -> Result<(String, 
 ///
 /// # Returns
 /// The detected delimiter character.
-fn detect_delimiter(header_line: &str) -> char {
+pub(crate) fn detect_delimiter(header_line: &str) -> char {
     [',', ';', '\t', '|']
         .iter()
         .max_by_key(|&&d| header_line.matches(d).count())

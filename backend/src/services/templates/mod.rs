@@ -10,7 +10,7 @@
 //! - `pdf`: Responsible for generating and serving a PDF document from a given template.
 
 mod get;
-mod pdf;
+pub(crate) mod pdf;
 mod save;
 
 use actix_web::web::{get, post, scope};
