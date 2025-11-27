@@ -1,3 +1,44 @@
+//! # Merge Job Start Service
+//!
+//! This module provides the `POST /api/merge/start` endpoint, which initiates a
+//! background job to perform a "mail merge" operation. It combines a verified
+//! data source (CSV) with a template to generate multiple PDF documents, one for
+//! each row in the data file.
+//!
+//! ## Workflow:
+//!
+//! 1.  **HTTP Request**: The `process` handler receives a `StartMergeRequest` containing
+//!     a `template_id`.
+//!
+//! 2.  **Job Scheduling**: It calls `schedule_merge_job`, which:
+//!     - Creates a unique `job_id` for the merge operation.
+//!     - Sets the initial job status to `Pending` in the shared `JobsState`.
+//!     - Immediately returns the `job_id` to the client, allowing for asynchronous status polling.
+//!     - Spawns a new Tokio task to manage the job's lifecycle.
+//!
+//! 3.  **Background Processing**: The spawned task uses `tokio::task::spawn_blocking` to
+//!     run the `merge_blocking` function on a dedicated thread pool. This prevents the
+//!     CPU-intensive file I/O and PDF generation from blocking the server's async runtime.
+//!
+//! 4.  **Data Validation**: `merge_blocking` first connects to the database to ensure the
+//!     template's associated data source has been successfully verified (`verified = 1`).
+//!     It retrieves the `datasource_md5` to locate the correct CSV file.
+//!
+//! 5.  **CSV Processing**: It reads the CSV file, determines the delimiter, and parses the header
+//!     and all data rows.
+//!
+//! 6.  **Iterative PDF Generation**: The function iterates through each row of the CSV data.
+//!     For each row, it calls `generate_pdf_for_task`.
+//!     - `generate_pdf_for_task` fetches the template text, substitutes the placeholders
+//!       (e.g., `{{column_name}}`) with the corresponding values from the current row, and
+//!       leverages the `services::templates::pdf` module to render a complete PDF.
+//!     - Each generated PDF is saved with a unique name (e.g., `{job_id}_{row_index}.pdf`).
+//!
+//! 7.  **Progress Reporting**: Throughout the process, the worker thread sends `MergeUpdate`
+//!     messages back to the async context. These updates report per-task progress (which is
+//!     translated into a percentage) or final failure/completion status. These are then
+//!     forwarded to the central `job_controller` to update the global job state.
+
 use crate::job_controller::state::{JobUpdate, JobsState};
 use crate::services::data_sources::csv::verify::{
     detect_delimiter, read_header_and_second_line, validate_and_normalize_titles,
@@ -14,25 +55,28 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-/// Represents a status update for a merge job or one of its tasks.
+/// Represents a status update for a merge job or one of its sub-tasks.
 ///
-/// This enum is used to communicate progress from the synchronous worker thread
-/// back to the asynchronous `job_controller`.
+/// This enum is used for internal communication, sending progress from the synchronous
+/// worker thread (`merge_blocking`) back to the asynchronous Tokio task that manages
+/// the job. This separation prevents the blocking worker from needing to `await` anything.
 #[derive(Debug)]
 pub enum MergeUpdate {
-    /// Updates the overall status of the merge job.
+    /// Updates the overall status of the entire merge job (e.g., to Failed).
     Job(JobStatus),
-    /// Reports the progress of an individual merge task (generating a single PDF).
+    /// Reports the progress of an individual merge task (i.e., one PDF generation).
+    /// This is used to calculate the percentage completion of the overall job.
     Task { row_index: usize, total_rows: usize },
 }
 
 /// The Actix web handler for `POST /api/merge/start`.
 ///
 /// Receives a `StartMergeRequest`, schedules the background merge job,
-/// and immediately returns a `job_id` to the client.
+/// and immediately returns a `job_id` to the client. The client can use this
+/// ID to poll the job's status.
 ///
 /// # Arguments
-/// * `state` - The shared `JobsState` injected by Actix.
+/// * `state` - The shared `JobsState`, injected by Actix, for managing job statuses.
 /// * `payload` - The JSON payload containing the `template_id` for the merge.
 ///
 /// # Returns
@@ -64,21 +108,23 @@ async fn schedule_merge_job(
     req: StartMergeRequest,
 ) -> Result<String, String> {
     let job_id = Uuid::new_v4().to_string();
+    // Immediately register the job as Pending.
     state
         .jobs
         .write()
         .await
         .insert(job_id.clone(), JobStatus::Pending);
 
-    let tx = state.tx.clone();
+    let tx = state.tx.clone(); // Channel to the central job updater.
     let job_id_clone = job_id.clone();
     let template_id = req.template_id;
 
     tokio::spawn(async move {
-        // Create a specific channel for merge updates.
+        // Create a dedicated channel for this specific job's updates.
         let (merge_tx, mut merge_rx) = mpsc::channel::<MergeUpdate>(100);
 
-        // Thread to listen for merge updates and translate them into JobUpdates.
+        // Spawn a listener task. It receives `MergeUpdate`s from the blocking worker
+        // and translates them into `JobUpdate`s for the central job controller.
         let job_updater_tx = tx.clone();
         let job_id_for_updater = job_id_clone.clone();
         tokio::spawn(async move {
@@ -89,7 +135,7 @@ async fn schedule_merge_job(
                         row_index,
                         total_rows,
                     } => {
-                        // Calculate the progress percentage.
+                        // Calculate progress percentage based on the number of processed rows.
                         let progress = if total_rows > 0 {
                             ((row_index + 1) as f32 / total_rows as f32 * 100.0) as u32
                         } else {
@@ -99,6 +145,7 @@ async fn schedule_merge_job(
                     }
                 };
 
+                // Send the standardized update to the central job controller.
                 let _ = job_updater_tx
                     .send(JobUpdate {
                         job_id: job_id_for_updater.clone(),
@@ -108,15 +155,17 @@ async fn schedule_merge_job(
             }
         });
 
-        // Run the blocking job.
+        // Execute the synchronous, blocking part of the job in a dedicated thread.
         let job_id_for_blocking = job_id_clone.clone();
         let template_id_for_blocking = template_id.clone();
         let handle = tokio::task::spawn_blocking(move || {
             merge_blocking(merge_tx, &job_id_for_blocking, &template_id_for_blocking)
         });
 
+        // Handle the result of the blocking task.
         match handle.await {
             Ok(Ok(_)) => {
+                // On success, report completion.
                 let _ = tx
                     .send(JobUpdate {
                         job_id: job_id_clone,
@@ -125,6 +174,7 @@ async fn schedule_merge_job(
                     .await;
             }
             Ok(Err(e)) => {
+                // If the blocking task returned a specific error, report it as Failed.
                 let _ = tx
                     .send(JobUpdate {
                         job_id: job_id_clone,
@@ -133,6 +183,7 @@ async fn schedule_merge_job(
                     .await;
             }
             Err(e) => {
+                // If the task panicked or was cancelled, report a join error.
                 let _ = tx
                     .send(JobUpdate {
                         job_id: job_id_clone,
@@ -146,14 +197,14 @@ async fn schedule_merge_job(
     Ok(job_id)
 }
 
-/// The main synchronous merge function, designed to be run in `spawn_blocking`.
+/// The main synchronous merge function, designed to be run via `spawn_blocking`.
 ///
 /// This function contains the complete, synchronous logic for the CSV merge, including
 /// database interaction, file I/O, and PDF generation. It sends status updates
 /// back to the main async context via the provided MPSC sender.
 ///
 /// # Arguments
-/// * `tx` - The MPSC sender to communicate job status updates.
+/// * `tx` - The MPSC sender to communicate `MergeUpdate`s back to the async listener.
 /// * `job_id` - The unique ID for this merge job.
 /// * `template_id` - The ID of the template associated with the CSV file.
 ///
@@ -164,34 +215,42 @@ fn merge_blocking(
     job_id: &str,
     template_id: &str,
 ) -> Result<(), String> {
+    // Report that the job is now in progress.
     let _ = tx.blocking_send(MergeUpdate::Job(JobStatus::InProgress(0)));
 
     let conn = Connection::open("templify.sqlite").map_err(|e| e.to_string())?;
 
+    // Fetch template metadata to ensure it's ready for merging.
     let (_id, datasource_md5, verified) =
         get_template_metadata(&conn, template_id).map_err(|e| e.to_string())?;
 
+    // The data source must be verified before a merge can be performed.
     if verified != 1 {
-        let err_msg = "Template is not verified.".to_string();
+        let err_msg = "Template data source has not been verified.".to_string();
+        // Report failure and exit early.
         let _ = tx.blocking_send(MergeUpdate::Job(JobStatus::Failed(err_msg.clone())));
         return Err(err_msg);
     }
 
+    // Construct the data source filename from the template ID and the stored MD5 hash.
     let ds_md5 = datasource_md5.ok_or("Datasource MD5 not found for verified template.")?;
     let file_path = format!("./{}_{}.csv", template_id, ds_md5);
     let file = fs::File::open(&file_path).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
 
+    // Reuse verification logic to parse the CSV header.
     let (header_line, _) = read_header_and_second_line(&mut reader)?;
     let delimiter = detect_delimiter(&header_line);
     let titles = validate_and_normalize_titles(&header_line, delimiter)?;
 
+    // Read all data rows into memory.
     let lines: Vec<String> = reader
         .lines()
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
     let total_rows = lines.len();
 
+    // Process each data row to generate a PDF.
     for (i, line) in lines.iter().enumerate() {
         let mut placeholders = HashMap::new();
         let values: Vec<&str> = line.split(delimiter).collect();
@@ -201,18 +260,18 @@ fn merge_blocking(
             }
         }
 
+        // Define a unique output path for each PDF.
         let output_filename = format!("{}_{}.pdf", job_id, i);
         let output_path = Path::new("./pdfs").join(&output_filename);
 
         if let Err(e) = generate_pdf_for_task(template_id, &placeholders, &output_path) {
-            // If a task fails, we can decide whether to fail the whole job or continue.
-            // Here, we fail the entire job.
+            // If a single PDF generation fails, fail the entire job.
             let err_msg = format!("Failed to generate PDF for row {}: {}", i + 1, e);
             let _ = tx.blocking_send(MergeUpdate::Job(JobStatus::Failed(err_msg.clone())));
             return Err(err_msg);
         }
 
-        // Send task progress update.
+        // Send a progress update after each successful task.
         let _ = tx.blocking_send(MergeUpdate::Task {
             row_index: i,
             total_rows,
@@ -222,7 +281,18 @@ fn merge_blocking(
     Ok(())
 }
 
-/// Generates a single PDF for a merge task.
+/// Generates a single PDF for one row of data.
+///
+/// This function fetches the template content, substitutes placeholders with the provided
+/// data, and then uses the `pdf` service's helpers to render the final document.
+///
+/// # Arguments
+/// * `template_id` - The ID of the template to use.
+/// * `placeholders` - A map of column titles to their values for the current row.
+/// * `output_path` - The path where the generated PDF will be saved.
+///
+/// # Returns
+/// An empty `Result` on success, or an error `String` on failure.
 fn generate_pdf_for_task(
     template_id: &str,
     placeholders: &HashMap<String, String>,
@@ -236,16 +306,18 @@ fn generate_pdf_for_task(
         .query_row([template_id], |row| row.get(0))
         .map_err(|e| e.to_string())?;
 
-    // Substitute placeholders
+    // Substitute all placeholders in the template text.
     for (key, value) in placeholders {
         let ph = format!("{{{{{}}}}}", key);
         template_text = template_text.replace(&ph, value);
     }
 
+    // --- PDF Generation using helpers from the `pdf` service ---
     let images_map = pdf::load_images(&conn, template_id).map_err(|e| e.to_string())?;
     let mut doc = pdf::configure_document().map_err(|e| e.to_string())?;
-    let mut temp_files = Vec::new();
+    let mut temp_files = Vec::new(); // To manage the lifetime of temporary image files.
 
+    // Process the substituted template line by line.
     for line in template_text.lines() {
         if line.starts_with("[img:") && line.ends_with(']') {
             pdf::handle_image_line(line, &images_map, &mut temp_files, &mut doc)
@@ -253,10 +325,13 @@ fn generate_pdf_for_task(
         } else if line.starts_with("- ") {
             pdf::handle_list_item(&mut doc, &line[2..]);
         } else {
+            // Note: Placeholder lines `[ph:...]` are not handled here, as they are
+            // expected to be substituted before this stage.
             pdf::handle_normal_line(line, &mut doc);
         }
     }
 
+    // Ensure the output directory exists and render the PDF.
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -266,14 +341,14 @@ fn generate_pdf_for_task(
     Ok(())
 }
 
-/// Retrieves template metadata from the database.
+/// Retrieves essential metadata for a template from the database.
 ///
 /// # Arguments
-/// * `conn` - Database connection
-/// * `template_id` - ID of the template
+/// * `conn` - An open database connection.
+/// * `template_id` - The ID of the template to query.
 ///
 /// # Returns
-/// A tuple containing (id, datasource_md5, verified status)
+/// A `Result` containing a tuple of (`id`, `datasource_md5`, `verified` status) on success.
 fn get_template_metadata(
     conn: &Connection,
     template_id: &str,
@@ -285,7 +360,7 @@ fn get_template_metadata(
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<String>>(1)?,
-            row.get::<_, i32>(2)?,
+            row.get::<_, i32>(2)?, // `verified` is stored as an INTEGER (0 or 1).
         ))
     })
 }
