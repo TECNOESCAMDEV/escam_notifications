@@ -47,6 +47,7 @@ use crate::services::templates::pdf;
 use actix_web::{web, HttpResponse, Responder};
 use common::jobs::JobStatus;
 use common::requests::StartMergeRequest;
+use regex::Regex;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::fs;
@@ -302,31 +303,39 @@ fn generate_pdf_for_task(
     let mut stmt = conn
         .prepare("SELECT text FROM templates WHERE id = ?1")
         .map_err(|e| e.to_string())?;
-    let mut template_text: String = stmt
+    let template_text: String = stmt
         .query_row([template_id], |row| row.get(0))
         .map_err(|e| e.to_string())?;
 
-    // Substitute all placeholders in the template text.
-    for (key, value) in placeholders {
-        let ph = format!("{{{{{}}}}}", key);
-        template_text = template_text.replace(&ph, value);
-    }
+    // --- Placeholder Substitution ---
+    // Regex to find placeholders like `[ph:title:base64_value]`
+    // Captures the 'title' in the first group.
+    let re = Regex::new(r"\[ph:([^:]+):[^\]]+\]").map_err(|e| e.to_string())?;
+
+    // Replace each found placeholder using a closure.
+    let substituted_text = re.replace_all(&template_text, |caps: &regex::Captures| {
+        // Get the column title captured by the regex (e.g., "temperatures").
+        let column_title = &caps[1];
+        // Look up the corresponding value in the current row's data.
+        // If not found, replace with an empty string.
+        placeholders.get(column_title).cloned().unwrap_or_default()
+    });
 
     // --- PDF Generation using helpers from the `pdf` service ---
     let images_map = pdf::load_images(&conn, template_id).map_err(|e| e.to_string())?;
     let mut doc = pdf::configure_document().map_err(|e| e.to_string())?;
     let mut temp_files = Vec::new(); // To manage the lifetime of temporary image files.
 
-    // Process the substituted template line by line.
-    for line in template_text.lines() {
+    // Process the substituted template text line by line.
+    for line in substituted_text.lines() {
         if line.starts_with("[img:") && line.ends_with(']') {
             pdf::handle_image_line(line, &images_map, &mut temp_files, &mut doc)
                 .map_err(|e| e.to_string())?;
         } else if line.starts_with("- ") {
             pdf::handle_list_item(&mut doc, &line[2..]);
         } else {
-            // Note: Placeholder lines `[ph:...]` are not handled here, as they are
-            // expected to be substituted before this stage.
+            // The line is treated as normal text.
+            // `[ph:...]` placeholders have already been replaced with their actual values.
             pdf::handle_normal_line(line, &mut doc);
         }
     }
