@@ -54,10 +54,11 @@ use common::requests::StartMergeRequest;
 use regex::Regex;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
-use std::fs;
-use std::io::{BufRead, BufReader};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::{fs, io};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -239,7 +240,7 @@ fn merge_blocking(
 
     let ds_md5 = datasource_md5.ok_or("Datasource MD5 not found for verified template.")?;
     let file_path = format!("./{}_{}.csv", template_id, ds_md5);
-    let file = fs::File::open(&file_path).map_err(|e| e.to_string())?;
+    let file = File::open(&file_path).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
 
     // Read header and determine CSV delimiter.
@@ -247,11 +248,8 @@ fn merge_blocking(
     let delimiter = detect_delimiter(&header_line);
     let titles = Arc::new(validate_and_normalize_titles(&header_line, delimiter)?);
 
-    // Count total lines for progress reporting without loading the whole file into memory.
-    let total_rows = BufReader::new(fs::File::open(&file_path).map_err(|e| e.to_string())?)
-        .lines()
-        .skip(1) // Skip header
-        .count();
+    // Count total data rows for progress tracking.
+    let total_rows = count_lines_raw(&file_path).map_err(|e| e.to_string())?;
 
     // --- Parallel processing with Rayon ---
     let pool = rayon::ThreadPoolBuilder::new()
@@ -367,7 +365,7 @@ fn generate_pdf_for_task(
     // --- Placeholder Substitution ---
     // This regex is designed to find placeholders created by the frontend, which have the format
     // `[ph:COLUMN_NAME:BASE64_ENCODED_DEFAULT_VALUE]`. We only care about the COLUMN_NAME.
-    let re = Regex::new(r"\[ph:([^:]+):[^\]]+\]").map_err(|e| e.to_string())?;
+    let re = Regex::new(r"\[ph:([^:]+):[^]]+]").map_err(|e| e.to_string())?;
 
     // Replace each found placeholder using a closure.
     let substituted_text = re.replace_all(&template_text, |caps: &regex::Captures| {
@@ -402,7 +400,7 @@ fn generate_pdf_for_task(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let mut out_file = fs::File::create(output_path).map_err(|e| e.to_string())?;
+    let mut out_file = File::create(output_path).map_err(|e| e.to_string())?;
     doc.render(&mut out_file).map_err(|e| e.to_string())?;
 
     Ok(())
@@ -430,4 +428,45 @@ fn get_template_metadata(
             row.get::<_, i32>(2)?, // `verified` is stored as an INTEGER (0 or 1).
         ))
     })
+}
+
+/// Efficiently counts the number of lines in a file, excluding the header.
+///
+/// This function reads the file in large chunks to minimize I/O operations and quickly
+/// counts newline characters (`\n`). It's designed to provide a total count for
+/// progress reporting without loading the entire file into memory.
+///
+/// # Arguments
+/// * `file_path` - The path to the file to be read.
+///
+/// # Returns
+/// An `io::Result` containing the number of lines minus one (for the header), or 0 if empty.
+fn count_lines_raw(file_path: &str) -> io::Result<usize> {
+    const BUFFER_SIZE: usize = 1024 * 64; // 64KB buffer.
+    let file = File::open(file_path)?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = [0; BUFFER_SIZE];
+    let mut count = 0;
+    let mut last_byte_was_newline = true;
+
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        count += buffer[..bytes_read].iter().filter(|&&b| b == b'\n').count();
+        last_byte_was_newline = buffer[bytes_read - 1] == b'\n';
+    }
+
+    // If the file doesn't end with a newline, the last line wasn't counted.
+    if !last_byte_was_newline && count > 0 {
+        count += 1;
+    }
+
+    // Subtract 1 for the header row.
+    if count > 0 {
+        Ok(count - 1)
+    } else {
+        Ok(0)
+    }
 }
